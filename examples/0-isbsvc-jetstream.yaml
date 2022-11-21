@@ -1,11 +1,22 @@
-#
-# This manifest is intended for demonstration purpose, it's not suitable for production.
-# Check https://numaflow.numaproj.io/user-guide/inter-step-buffer-service/ to figure out reliable configuration for production.
-#
+
 apiVersion: numaflow.numaproj.io/v1alpha1
 kind: InterStepBufferService
 metadata:
   name: default
 spec:
   jetstream:
-    version: latest # Do NOT use "latest" in real deployment, check "numaflow-controller-config" ConfigMap to get available versions.
+    version: latest
+    replicas: 3
+    persistence:
+      accessMode: ReadWriteOnce
+      volumeSize: 50Gi
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: isbsvc
+                  numaflow.numaproj.io/isbsvc-name: default
+              topologyKey: failure-domain.beta.kubernetes.io/zone
+            weight: 100
