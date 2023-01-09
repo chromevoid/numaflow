@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -253,6 +254,8 @@ func (ms *metricsServer) Start(ctx context.Context) (func(ctx context.Context) e
 	})
 	debugEnabled := os.Getenv(dfv1.EnvDebug)
 	if debugEnabled == "true" {
+		runtime.SetBlockProfileRate(1)     // enable block
+		runtime.SetMutexProfileFraction(1) // enable mutex
 		mux.HandleFunc("/debug/pprof/", pprof.Index)
 		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
