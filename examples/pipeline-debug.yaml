@@ -1,0 +1,83 @@
+apiVersion: numaflow.numaproj.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: simple-pipeline
+spec:
+  watermark:
+    disabled: false
+  vertices:
+    - name: input
+      scale:
+        max: 12
+        cooldownSeconds: 240
+        lookbackSeconds: 300
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "false"
+      source:
+        # A self data generating source
+        generator:
+          rpu: 1000
+          duration: 1s
+    - name: p1
+      scale:
+        max: 15
+        cooldownSeconds: 240
+        lookbackSeconds: 300
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true"
+      udf:
+        container:
+          # Tell the input number is even or odd, see https://github.com/numaproj/numaflow-go/tree/main/pkg/function/examples/evenodd
+          image: quay.io/numaio/numaflow-go/map-flatmap
+    - name: p2
+      scale:
+        max: 15
+        cooldownSeconds: 240
+        lookbackSeconds: 300
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true"
+      udf:
+        builtin:
+          name: cat
+    - name: p3
+      scale:
+        max: 15
+        cooldownSeconds: 240
+        lookbackSeconds: 300
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true"
+      udf:
+        builtin:
+          name: cat
+    - name: output
+      scale:
+        max: 20
+        cooldownSeconds: 240
+        lookbackSeconds: 300
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true"
+      sink:
+        # A simple log printing sink
+        log: {}
+  edges:
+    - from: input
+      to: p1
+    - from: p1
+      to: p2
+    - from: p2
+      to: p3
+    - from: p3
+      to: output
+  limits:
+    bufferMaxLength: 30000
+    readBatchSize: 500
