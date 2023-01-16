@@ -20,19 +20,16 @@ spec:
         max: 1
       udf:
         container:
-          # Tell the input number is even or odd, see https://github.com/numaproj/numaflow-go/tree/main/pkg/function/examples/even_odd
-          image: quay.io/numaio/numaflow-go/map-flatmap
+          image: quay.io/chromevoid/map-generate-ten:latest
     - name: reduce
       udf:
         container:
           image: quay.io/numaio/numaflow-go/reduce-counter
         groupBy:
           window:
-            fixed:
+            sliding:
               length: 10s
-#            sliding:
-#              length: 10s
-#              slide: 5s
+              slide: 5s
           keyed: true
           storage:
             persistentVolumeClaim:
@@ -53,6 +50,6 @@ spec:
       to: map
     - from: map
       to: reduce
-      parallelism: 5
+      parallelism: 10
     - from: reduce
       to: sink
