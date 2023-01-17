@@ -20,8 +20,25 @@ spec:
         max: 1
       udf:
         container:
-          image: quay.io/chromevoid/map-generate-ten:latest
-    - name: reduce
+          image: quay.io/numaio/numaflow-go/map-generate-ten
+    - name: fixed
+      udf:
+        container:
+          image: quay.io/numaio/numaflow-go/reduce-counter
+        groupBy:
+          window:
+            fixed:
+              length: 10s
+          keyed: true
+          storage:
+            persistentVolumeClaim:
+              volumeSize: 5Gi
+              accessMode: ReadWriteOnce
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true" # DO NOT forget the double quotes!!!
+    - name: sliding
       udf:
         container:
           image: quay.io/numaio/numaflow-go/reduce-counter
@@ -49,7 +66,10 @@ spec:
     - from: in
       to: map
     - from: map
-      to: reduce
+      to: fixed
+      parallelism: 5
+    - from: fixed
+      to: sliding
       parallelism: 10
-    - from: reduce
+    - from: sliding
       to: sink
