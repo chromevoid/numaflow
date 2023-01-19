@@ -1,0 +1,28 @@
+apiVersion: numaflow.numaproj.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: simple-pipeline
+spec:
+  vertices:
+    - name: in
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true"
+      source:
+        # A self data generating source
+        generator:
+          rpu: 100
+          duration: 1s
+    - name: out
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true"
+      sink:
+        udsink:
+          container:
+            image: quay.io/numaio/numaflow-go/sink-log
+  edges:
+    - from: in
+      to: out
