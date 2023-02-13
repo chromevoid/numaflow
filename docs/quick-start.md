@@ -69,14 +69,14 @@ kubectl delete -f https://raw.githubusercontent.com/numaproj/numaflow/stable/exa
 
 ## An Advanced Pipeline
 
-In this example, there are five vertices in a pipeline. An [HTTP](./user-guide/sources/http.md) source vertex which serves an HTTP endpoint to receive numbers as source data, a [UDF](./user-guide/user-defined-functions.md) vertex to tag the ingested numbers with the key `even` or `odd`, three [Log](./user-guide/sinks/log.md) sinks, one to print the `even` numbers, one to print the `odd` numbers, and the other one to print both the even and odd numbers.
+In this example, there are five vertices in a pipeline. An [HTTP](./user-guide/sources/http.md) source vertex which serves an HTTP endpoint to receive numbers as source data, a [UDF](user-guide/user-defined-functions/map/map.md) vertex to tag the ingested numbers with the key `even` or `odd`, three [Log](./user-guide/sinks/log.md) sinks, one to print the `even` numbers, one to print the `odd` numbers, and the other one to print both the even and odd numbers.
 
 ![Pipeline Diagram](assets/even-odd.png)
 
 Create the `even-odd` pipeline.
 
 ```shell
-kubectl apply -f https://raw.githubusercontent.com/numaproj/numaflow/stable/test/e2e/testdata/even-odd.yaml
+kubectl apply -f https://raw.githubusercontent.com/numaproj/numaflow/main/examples/2-even-odd-pipeline.yaml
 
 # Wait for pods to be ready
 kubectl get pods
@@ -114,16 +114,22 @@ kubectl logs -f even-odd-odd-sink-0-a6p0n
 View the UI for the advanced pipeline at https://localhost:8443/
 ![Numaflow UI](assets/numaflow-ui-advanced-pipeline.png)
 
-The source code of the `even-odd` [User Defined Function](./user-guide/user-defined-functions.md) can be found [here](https://github.com/numaproj/numaflow-go/tree/main/pkg/function/examples/evenodd). You also can replace the [Log](./user-guide/sinks/log.md) Sink with some other sinks like [Kafka](./user-guide/sinks/kafka.md) to forward the data to Kafka topics.
+The source code of the `even-odd` [User Defined Function](user-guide/user-defined-functions/map/map.md) can be found [here](https://github.com/numaproj/numaflow-go/tree/main/pkg/function/examples/even_odd). You also can replace the [Log](./user-guide/sinks/log.md) Sink with some other sinks like [Kafka](./user-guide/sinks/kafka.md) to forward the data to Kafka topics.
 
 The pipeline can be deleted by
 
 ```shell
-kubectl delete -f https://raw.githubusercontent.com/numaproj/numaflow/stable/test/e2e/testdata/even-odd.yaml
+kubectl delete -f https://raw.githubusercontent.com/numaproj/numaflow/main/examples/2-even-odd-pipeline.yaml
 ```
+
+## A pipeline with reduce (aggregation)
+
+[Reduce Examples](user-guide/user-defined-functions/reduce/examples.md)
 
 ## What's Next
 
 Try more examples in the [`examples`](https://github.com/numaproj/numaflow/tree/main/examples) directory.
 
-After exploring how Numaflow pipeline run, you can check what data [Sources](./user-guide/sources/generator.md) and [Sinks](./user-guide/sinks/kafka.md) Numaflow supports out of the box, or learn how to write [User Defined Functions](./user-guide/user-defined-functions.md).
+After exploring how Numaflow pipeline run, you can check what data [Sources](./user-guide/sources/generator.md) 
+and [Sinks](./user-guide/sinks/kafka.md) Numaflow supports out of the box, or learn how to write 
+[User Defined Functions](user-guide/user-defined-functions/user-defined-functions.md).

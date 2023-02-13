@@ -5,18 +5,8 @@ metadata:
   name: default
 spec:
   jetstream:
-    version: latest
-    replicas: 3
+    version: latest # Do NOT use "latest" in real deployment, check "numaflow-controller-config" ConfigMap to get available versions.
+    # Optional. Specifying "persistence" will create a PersistentVolumeClaim for data persistence, it works for most of Kubernetes 
+    # clusters, including Kind, Minikube, K3s, etc, it's needed to run production workloads.
     persistence:
-      accessMode: ReadWriteOnce
-      volumeSize: 50Gi
-    affinity:
-      podAntiAffinity:
-        preferredDuringSchedulingIgnoredDuringExecution:
-          - podAffinityTerm:
-              labelSelector:
-                matchLabels:
-                  app.kubernetes.io/component: isbsvc
-                  numaflow.numaproj.io/isbsvc-name: default
-              topologyKey: failure-domain.beta.kubernetes.io/zone
-            weight: 100
+      volumeSize: 3Gi

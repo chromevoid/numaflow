@@ -22,16 +22,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/numaproj/numaflow/pkg/pbq/partition"
+	"github.com/numaproj/numaflow/pkg/reduce/pbq/partition"
 	"github.com/numaproj/numaflow/pkg/window"
 )
 
 // AlignedKeyedWindow maintains association between keys and a window.
 // In a keyed stream, we need to close all the partitions when the watermark is past the window.
 type AlignedKeyedWindow struct {
-	// Start start time of the window
+	// Start time of the window
 	Start time.Time
-	// End end time of the window
+	// End time of the window
 	End time.Time
 	// keys map of keys
 	keys map[string]struct{}
@@ -61,8 +61,8 @@ func (kw *AlignedKeyedWindow) EndTime() time.Time {
 	return kw.End
 }
 
-// AddKey adds a key to an existing window
-func (kw *AlignedKeyedWindow) AddKey(key string) {
+// AddSlot adds a slot to an existing window
+func (kw *AlignedKeyedWindow) AddSlot(key string) {
 	kw.lock.Lock()
 	defer kw.lock.Unlock()
 	if _, ok := kw.keys[key]; !ok {
@@ -78,7 +78,7 @@ func (kw *AlignedKeyedWindow) Partitions() []partition.ID {
 	partitions := make([]partition.ID, len(kw.keys))
 	idx := 0
 	for k := range kw.keys {
-		partitions[idx] = partition.ID{Start: kw.StartTime(), End: kw.EndTime(), Key: k}
+		partitions[idx] = partition.ID{Start: kw.StartTime(), End: kw.EndTime(), Slot: k}
 		idx++
 	}
 
@@ -93,6 +93,7 @@ func (kw *AlignedKeyedWindow) Keys() []string {
 	idx := 0
 	for k := range kw.keys {
 		keys[idx] = k
+		idx++
 	}
 
 	return keys

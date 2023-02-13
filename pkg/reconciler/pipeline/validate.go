@@ -19,6 +19,8 @@ package pipeline
 import (
 	"fmt"
 
+	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
+
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 )
 
@@ -26,6 +28,11 @@ func ValidatePipeline(pl *dfv1.Pipeline) error {
 	if pl == nil {
 		return fmt.Errorf("nil pipeline")
 	}
+
+	if errs := k8svalidation.IsDNS1035Label(pl.Name); len(errs) > 0 {
+		return fmt.Errorf("invalid pipeline name %q, %v", pl.Name, errs)
+	}
+
 	if len(pl.Spec.Vertices) == 0 {
 		return fmt.Errorf("empty vertices")
 	}
@@ -34,6 +41,7 @@ func ValidatePipeline(pl *dfv1.Pipeline) error {
 	}
 	names := make(map[string]bool)
 	sources := make(map[string]dfv1.AbstractVertex)
+	udTransformers := make(map[string]dfv1.AbstractVertex)
 	sinks := make(map[string]dfv1.AbstractVertex)
 	mapUdfs := make(map[string]dfv1.AbstractVertex)
 	reduceUdfs := make(map[string]dfv1.AbstractVertex)
@@ -51,6 +59,9 @@ func ValidatePipeline(pl *dfv1.Pipeline) error {
 				return fmt.Errorf("invalid vertex %q, only one of 'source', 'sink' and 'udf' can be specified", v.Name)
 			}
 			sources[v.Name] = v
+			if v.Source.UDTransformer != nil {
+				udTransformers[v.Name] = v
+			}
 		}
 		if v.Sink != nil {
 			if v.Source != nil || v.UDF != nil {
@@ -76,6 +87,20 @@ func ValidatePipeline(pl *dfv1.Pipeline) error {
 
 	if len(sinks) == 0 {
 		return fmt.Errorf("pipeline has no sink, at least one vertex with 'sink' defined is required")
+	}
+
+	for k, t := range udTransformers {
+		transformer := t.Source.UDTransformer
+		if transformer.Container != nil {
+			if transformer.Container.Image == "" && transformer.Builtin == nil {
+				return fmt.Errorf("invalid source vertex %q, either specify a builtin transformer, or a customized image", k)
+			}
+			if transformer.Container.Image != "" && transformer.Builtin != nil {
+				return fmt.Errorf("invalid source vertex %q, can not specify both builtin transformer, and a customized image", k)
+			}
+		} else if transformer.Builtin == nil {
+			return fmt.Errorf("invalid source vertex %q, either specify a builtin transformer, or a customized image", k)
+		}
 	}
 
 	for k, u := range mapUdfs {
@@ -123,11 +148,6 @@ func ValidatePipeline(pl *dfv1.Pipeline) error {
 		if _, existing := sinks[e.From]; existing {
 			return fmt.Errorf("sink vertex %q can not be define as 'from'", e.To)
 		}
-		if e.Conditions != nil && len(e.Conditions.KeyIn) > 0 {
-			if _, ok := sources[e.From]; ok { // Source vertex should not do conditional forwarding
-				return fmt.Errorf(`invalid edge, "conditions.keysIn" not allowed for %q`, e.From)
-			}
-		}
 		if e.Parallelism != nil {
 			if _, ok := reduceUdfs[e.To]; !ok {
 				return fmt.Errorf(`invalid edge (%s - %s), "parallelism" is not allowed for an edge leading to a non-reduce vertex`, e.From, e.To)
@@ -164,11 +184,18 @@ func ValidatePipeline(pl *dfv1.Pipeline) error {
 		if err := validateVertex(v); err != nil {
 			return err
 		}
+		// The length of "{pipeline}-{vertex}-headless" can not be longer than 63.
+		if errs := k8svalidation.IsDNS1035Label(fmt.Sprintf("%s-%s-headless", pl.Name, v.Name)); len(errs) > 0 {
+			return fmt.Errorf("the length of the pipeline name plus the vertex name is over the max limit. (%s-%s), %v", pl.Name, v.Name, errs)
+		}
 	}
 	return nil
 }
 
 func validateVertex(v dfv1.AbstractVertex) error {
+	if errs := k8svalidation.IsDNS1035Label(v.Name); len(errs) > 0 {
+		return fmt.Errorf("invalid vertex name %q, %v", v.Name, errs)
+	}
 	min, max := int32(0), int32(dfv1.DefaultMaxReplicas)
 	if v.Scale.Min != nil {
 		min = *v.Scale.Min
@@ -203,12 +230,35 @@ func validateVertex(v dfv1.AbstractVertex) error {
 
 func validateUDF(udf dfv1.UDF) error {
 	if udf.GroupBy != nil {
-		if x := udf.GroupBy.Window.Fixed; x == nil {
+		f := udf.GroupBy.Window.Fixed
+		s := udf.GroupBy.Window.Sliding
+		storage := udf.GroupBy.Storage
+		if f == nil && s == nil {
 			return fmt.Errorf(`invalid "groupBy.window", no windowing strategy specified`)
-		} else {
-			if x.Length == nil {
-				return fmt.Errorf(`invalid "groupBy.window", "length" is missing`)
-			}
+		}
+
+		if f != nil && s != nil {
+			return fmt.Errorf(`invalid "groupBy.window", either fixed or sliding is allowed, not both`)
+		}
+
+		if f != nil && f.Length == nil {
+			return fmt.Errorf(`invalid "groupBy.window.fixed", "length" is missing`)
+		}
+
+		if s != nil && (s.Length == nil) {
+			return fmt.Errorf(`invalid "groupBy.window.sliding", "length" is missing`)
+		}
+		if s != nil && (s.Slide == nil) {
+			return fmt.Errorf(`invalid "groupBy.window.sliding", "slide" is missing`)
+		}
+		if storage == nil {
+			return fmt.Errorf(`invalid "groupBy", "storage" is missing`)
+		}
+		if storage.PersistentVolumeClaim == nil && storage.EmptyDir == nil {
+			return fmt.Errorf(`invalid "groupBy.storage", type of storage to use is missing`)
+		}
+		if storage.PersistentVolumeClaim != nil && storage.EmptyDir != nil {
+			return fmt.Errorf(`invalid "groupBy.storage", either emptyDir or persistentVolumeClaim is allowed, not both`)
 		}
 	}
 	return nil
@@ -218,5 +268,6 @@ func isReservedContainerName(name string) bool {
 	return name == dfv1.CtrInit ||
 		name == dfv1.CtrMain ||
 		name == dfv1.CtrUdf ||
-		name == dfv1.CtrUdsink
+		name == dfv1.CtrUdsink ||
+		name == dfv1.CtrUdtransformer
 }

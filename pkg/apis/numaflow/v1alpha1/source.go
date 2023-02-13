@@ -17,6 +17,11 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"encoding/base64"
+	"fmt"
+	"sort"
+	"strings"
+
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -27,10 +32,60 @@ type Source struct {
 	Kafka *KafkaSource `json:"kafka,omitempty" protobuf:"bytes,2,opt,name=kafka"`
 	// +optional
 	HTTP *HTTPSource `json:"http,omitempty" protobuf:"bytes,3,opt,name=http"`
+	// +optional
+	Nats *NatsSource `json:"nats,omitempty" protobuf:"bytes,4,opt,name=nats"`
+	// +optional
+	UDTransformer *UDTransformer `json:"transformer,omitempty" protobuf:"bytes,5,opt,name=transformer"`
 }
 
 func (s Source) getContainers(req getContainerReq) ([]corev1.Container, error) {
-	return []corev1.Container{
-		containerBuilder{}.init(req).args("processor", "--type="+string(VertexTypeSource), "--isbsvc-type="+string(req.isbSvcType)).build(),
-	}, nil
+	containers := []corev1.Container{
+		s.getMainContainer(req),
+	}
+	if s.UDTransformer != nil {
+		containers = append(containers, s.getUDTransformerContainer(req))
+	}
+	return containers, nil
+}
+
+func (s Source) getMainContainer(req getContainerReq) corev1.Container {
+	return containerBuilder{}.init(req).args("processor", "--type="+string(VertexTypeSource), "--isbsvc-type="+string(req.isbSvcType)).build()
+}
+
+func (s Source) getUDTransformerContainer(mainContainerReq getContainerReq) corev1.Container {
+	c := containerBuilder{}.
+		name(CtrUdtransformer).
+		imagePullPolicy(mainContainerReq.imagePullPolicy). // Use the same image pull policy as the main container
+		appendVolumeMounts(mainContainerReq.volumeMounts...)
+	if x := s.UDTransformer.Container; x != nil && x.Image != "" { // customized image
+		c = c.image(x.Image)
+		if len(x.Command) > 0 {
+			c = c.command(x.Command...)
+		}
+		if len(x.Args) > 0 {
+			c = c.args(x.Args...)
+		}
+	} else { // built-in
+		args := []string{"builtin-transformer", "--name=" + s.UDTransformer.Builtin.Name}
+		for _, a := range s.UDTransformer.Builtin.Args {
+			args = append(args, "--args="+base64.StdEncoding.EncodeToString([]byte(a)))
+		}
+		var kwargs []string
+		for k, v := range s.UDTransformer.Builtin.KWArgs {
+			kwargs = append(kwargs, fmt.Sprintf("%s=%s", k, base64.StdEncoding.EncodeToString([]byte(v))))
+		}
+		if len(kwargs) > 0 {
+			// The order of the kwargs items is random because we construct it from an unordered map Builtin.KWArgs.
+			// We sort the kwargs first before converting it to a string argument to ensure consistency.
+			// This is important because in vertex controller we use hash on PodSpec to determine if a pod already exists, which requires the kwargs being consistent.
+			sort.Strings(kwargs)
+			args = append(args, "--kwargs="+strings.Join(kwargs, ","))
+		}
+
+		c = c.image(mainContainerReq.image).args(args...) // Use the same image as the main container
+	}
+	if x := s.UDTransformer.Container; x != nil {
+		c = c.appendEnv(x.Env...).appendVolumeMounts(x.VolumeMounts...).resources(x.Resources).securityContext(x.SecurityContext)
+	}
+	return c.build()
 }

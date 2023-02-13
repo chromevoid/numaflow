@@ -21,15 +21,16 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"sync"
+	"strconv"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/suite"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 	daemonclient "github.com/numaproj/numaflow/pkg/daemon/client"
 	. "github.com/numaproj/numaflow/test/fixtures"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/suite"
 )
 
 type FunctionalSuite struct {
@@ -41,14 +42,13 @@ func (s *FunctionalSuite) TestCreateSimplePipeline() {
 		When().
 		CreatePipelineAndWait()
 	defer w.DeletePipelineAndWait()
-
 	pipelineName := "simple-pipeline"
 
 	w.Expect().
 		VertexPodsRunning().DaemonPodsRunning().
 		VertexPodLogContains("input", LogSourceVertexStarted).
 		VertexPodLogContains("p1", LogUDFVertexStarted, PodLogCheckOptionWithContainer("numa")).
-		VertexPodLogContains("output", LogSinkVertexStarted).
+		VertexPodLogContains("output", SinkVertexStarted).
 		DaemonPodLogContains(pipelineName, LogDaemonStarted).
 		VertexPodLogContains("output", `"Data":".*","Createdts":.*`)
 
@@ -100,82 +100,111 @@ func (s *FunctionalSuite) TestCreateSimplePipeline() {
 	assert.Equal(s.T(), "input", *bufferInfo.FromVertex)
 	m, err := client.GetVertexMetrics(context.Background(), pipelineName, "p1")
 	assert.NoError(s.T(), err)
-	assert.Equal(s.T(), pipelineName, *m.Pipeline)
+	assert.Equal(s.T(), pipelineName, *m[0].Pipeline)
 }
 
-func (s *FunctionalSuite) TestFiltering() {
-	w := s.Given().Pipeline("@testdata/filtering.yaml").
+func (s *FunctionalSuite) TestUDFFiltering() {
+	w := s.Given().Pipeline("@testdata/udf-filtering.yaml").
 		When().
 		CreatePipelineAndWait()
 	defer w.DeletePipelineAndWait()
+	pipelineName := "udf-filtering"
 
-	w.Expect().
-		VertexPodsRunning().
-		VertexPodLogContains("in", LogSourceVertexStarted).
-		VertexPodLogContains("p1", LogUDFVertexStarted, PodLogCheckOptionWithContainer("numa")).
-		VertexPodLogContains("out", LogSinkVertexStarted)
+	// wait for all the pods to come up
+	w.Expect().VertexPodsRunning()
 
-	defer w.VertexPodPortForward("in", 8443, dfv1.VertexHTTPSPort).
-		TerminateAllPodPortForwards()
+	expect0 := `{"id": 180, "msg": "hello", "expect0": "fail", "desc": "A bad example"}`
+	expect1 := `{"id": 80, "msg": "hello1", "expect1": "fail", "desc": "A bad example"}`
+	expect2 := `{"id": 80, "msg": "hello", "expect2": "fail", "desc": "A bad example"}`
+	expect3 := `{"id": 80, "msg": "hello", "expect3": "succeed", "desc": "A good example"}`
+	expect4 := `{"id": 80, "msg": "hello", "expect4": "succeed", "desc": "A good example"}`
 
-	HTTPExpect(s.T(), "https://localhost:8443").POST("/vertices/in").WithBytes([]byte(`{"id": 180, "msg": "hello", "expect0": "fail", "desc": "A bad example"}`)).
-		Expect().
-		Status(204)
+	w.SendMessageTo(pipelineName, "in", NewHttpPostRequest().WithBody([]byte(expect0))).
+		SendMessageTo(pipelineName, "in", NewHttpPostRequest().WithBody([]byte(expect1))).
+		SendMessageTo(pipelineName, "in", NewHttpPostRequest().WithBody([]byte(expect2))).
+		SendMessageTo(pipelineName, "in", NewHttpPostRequest().WithBody([]byte(expect3))).
+		SendMessageTo(pipelineName, "in", NewHttpPostRequest().WithBody([]byte(expect4)))
 
-	HTTPExpect(s.T(), "https://localhost:8443").POST("/vertices/in").WithBytes([]byte(`{"id": 80, "msg": "hello1", "expect1": "fail", "desc": "A bad example"}`)).
-		Expect().
-		Status(204)
+	w.Expect().SinkContains("out", expect3)
+	w.Expect().SinkContains("out", expect4)
+	w.Expect().SinkNotContains("out", expect0)
+	w.Expect().SinkNotContains("out", expect1)
+	w.Expect().SinkNotContains("out", expect2)
+}
 
-	HTTPExpect(s.T(), "https://localhost:8443").POST("/vertices/in").WithBytes([]byte(`{"id": 80, "msg": "hello", "expect2": "fail", "desc": "A bad example"}`)).
-		Expect().
-		Status(204)
+func (s *FunctionalSuite) TestSourceFiltering() {
+	w := s.Given().Pipeline("@testdata/source-filtering.yaml").
+		When().
+		CreatePipelineAndWait()
+	defer w.DeletePipelineAndWait()
+	pipelineName := "source-filtering"
 
-	HTTPExpect(s.T(), "https://localhost:8443").POST("/vertices/in").WithBytes([]byte(`{"id": 80, "msg": "hello", "expect3": "succeed", "desc": "A good example"}`)).
-		Expect().
-		Status(204)
+	// wait for all the pods to come up
+	w.Expect().VertexPodsRunning()
 
-	w.Expect().VertexPodLogContains("out", "expect3")
-	w.Expect().VertexPodLogNotContains("out", "expect[0-2]", PodLogCheckOptionWithTimeout(2*time.Second))
+	expect0 := `{"id": 180, "msg": "hello", "expect0": "fail", "desc": "A bad example"}`
+	expect1 := `{"id": 80, "msg": "hello1", "expect1": "fail", "desc": "A bad example"}`
+	expect2 := `{"id": 80, "msg": "hello", "expect2": "fail", "desc": "A bad example"}`
+	expect3 := `{"id": 80, "msg": "hello", "expect3": "succeed", "desc": "A good example"}`
+	expect4 := `{"id": 80, "msg": "hello", "expect4": "succeed", "desc": "A good example"}`
+
+	w.SendMessageTo(pipelineName, "in", NewHttpPostRequest().WithBody([]byte(expect0))).
+		SendMessageTo(pipelineName, "in", NewHttpPostRequest().WithBody([]byte(expect1))).
+		SendMessageTo(pipelineName, "in", NewHttpPostRequest().WithBody([]byte(expect2))).
+		SendMessageTo(pipelineName, "in", NewHttpPostRequest().WithBody([]byte(expect3))).
+		SendMessageTo(pipelineName, "in", NewHttpPostRequest().WithBody([]byte(expect4)))
+
+	w.Expect().SinkContains("out", expect3)
+	w.Expect().SinkContains("out", expect4)
+	w.Expect().SinkNotContains("out", expect0)
+	w.Expect().SinkNotContains("out", expect1)
+	w.Expect().SinkNotContains("out", expect2)
+}
+
+func (s *FunctionalSuite) TestBuiltinEventTimeExtractor() {
+	w := s.Given().Pipeline("@testdata/extract-event-time-from-payload.yaml").
+		When().
+		CreatePipelineAndWait()
+	defer w.DeletePipelineAndWait()
+	pipelineName := "extract-event-time"
+
+	// wait for all the pods to come up
+	w.Expect().VertexPodsRunning()
+
+	// In this test, we send a message with event time being now, apply event time extractor and verify from log that the message event time gets updated.
+	timeNow := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	testMsg := `{"test": 21, "item": [{"id": 1, "name": "numa", "time": "2022-02-18T21:54:42.123Z"},{"id": 2, "name": "numa", "time": "2021-02-18T21:54:42.123Z"}]}`
+
+	w.SendMessageTo(pipelineName, "in", NewHttpPostRequest().WithBody([]byte(testMsg)).WithHeader("X-Numaflow-Event-Time", timeNow))
+
+	w.Expect().VertexPodLogContains("out", fmt.Sprintf("EventTime -  %d", time.Date(2021, 2, 18, 21, 54, 42, 123000000, time.UTC).UnixMilli()), PodLogCheckOptionWithCount(1))
 }
 
 func (s *FunctionalSuite) TestConditionalForwarding() {
 	w := s.Given().Pipeline("@testdata/even-odd.yaml").
 		When().
 		CreatePipelineAndWait()
-
 	defer w.DeletePipelineAndWait()
+	pipelineName := "even-odd"
 
-	w.Expect().
-		VertexPodsRunning().
-		VertexPodLogContains("in", LogSourceVertexStarted).
-		VertexPodLogContains("even-or-odd", LogUDFVertexStarted, PodLogCheckOptionWithContainer("numa")).
-		VertexPodLogContains("even-sink", LogSinkVertexStarted).
-		VertexPodLogContains("odd-sink", LogSinkVertexStarted).
-		VertexPodLogContains("number-sink", LogSinkVertexStarted)
-	defer w.VertexPodPortForward("in", 8443, dfv1.VertexHTTPSPort).
-		TerminateAllPodPortForwards()
+	// wait for all the pods to come up
+	w.Expect().VertexPodsRunning()
 
-	HTTPExpect(s.T(), "https://localhost:8443").POST("/vertices/in").WithBytes([]byte("888888")).
-		Expect().
-		Status(204)
-	HTTPExpect(s.T(), "https://localhost:8443").POST("/vertices/in").WithBytes([]byte("888889")).
-		Expect().
-		Status(204)
-	HTTPExpect(s.T(), "https://localhost:8443").POST("/vertices/in").WithBytes([]byte("not an integer")).
-		Expect().
-		Status(204)
+	w.SendMessageTo(pipelineName, "in", NewHttpPostRequest().WithBody([]byte("888888"))).
+		SendMessageTo(pipelineName, "in", NewHttpPostRequest().WithBody([]byte("888889"))).
+		SendMessageTo(pipelineName, "in", NewHttpPostRequest().WithBody([]byte("not an integer")))
 
-	w.Expect().VertexPodLogContains("even-sink", "888888")
-	w.Expect().VertexPodLogNotContains("even-sink", "888889", PodLogCheckOptionWithTimeout(2*time.Second))
-	w.Expect().VertexPodLogNotContains("even-sink", "not an integer", PodLogCheckOptionWithTimeout(2*time.Second))
+	w.Expect().SinkContains("even-sink", "888888")
+	w.Expect().SinkNotContains("even-sink", "888889")
+	w.Expect().SinkNotContains("even-sink", "not an integer")
 
-	w.Expect().VertexPodLogContains("odd-sink", "888889")
-	w.Expect().VertexPodLogNotContains("odd-sink", "888888", PodLogCheckOptionWithTimeout(2*time.Second))
-	w.Expect().VertexPodLogNotContains("odd-sink", "not an integer", PodLogCheckOptionWithTimeout(2*time.Second))
+	w.Expect().SinkContains("odd-sink", "888889")
+	w.Expect().SinkNotContains("odd-sink", "888888")
+	w.Expect().SinkNotContains("odd-sink", "not an integer")
 
-	w.Expect().VertexPodLogContains("number-sink", "888888")
-	w.Expect().VertexPodLogContains("number-sink", "888889")
-	w.Expect().VertexPodLogNotContains("number-sink", "not an integer", PodLogCheckOptionWithTimeout(2*time.Second))
+	w.Expect().SinkContains("number-sink", "888888")
+	w.Expect().SinkContains("number-sink", "888889")
+	w.Expect().SinkNotContains("number-sink", "not an integer")
 }
 
 func (s *FunctionalSuite) TestWatermarkEnabled() {
@@ -188,17 +217,8 @@ func (s *FunctionalSuite) TestWatermarkEnabled() {
 	// TODO: Any way to extract the list from suite
 	vertexList := []string{"input", "cat1", "cat2", "cat3", "output1", "output2"}
 
-	w.Expect().
-		VertexPodsRunning().DaemonPodsRunning().
-		VertexPodLogContains("input", LogSourceVertexStarted).
-		VertexPodLogContains("cat1", LogUDFVertexStarted, PodLogCheckOptionWithContainer("numa")).
-		VertexPodLogContains("cat2", LogUDFVertexStarted, PodLogCheckOptionWithContainer("numa")).
-		VertexPodLogContains("cat3", LogUDFVertexStarted, PodLogCheckOptionWithContainer("numa")).
-		VertexPodLogContains("output1", LogSinkVertexStarted).
-		VertexPodLogContains("output2", LogSinkVertexStarted).
-		DaemonPodLogContains(pipelineName, LogDaemonStarted).
-		VertexPodLogContains("output1", `"Data":".*","Createdts":.*`).
-		VertexPodLogContains("output2", `"Data":".*","Createdts":.*`)
+	// wait for all the pods to come up
+	w.Expect().VertexPodsRunning().DaemonPodsRunning()
 
 	defer w.DaemonPodPortForward(pipelineName, 1234, dfv1.DaemonServicePort).
 		TerminateAllPodPortForwards()
@@ -217,33 +237,39 @@ func (s *FunctionalSuite) TestWatermarkEnabled() {
 	assert.Equal(s.T(), "input", *bufferInfo.FromVertex)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	var wg sync.WaitGroup
-	for _, vertex := range vertexList {
-		wg.Add(1)
-		go func(vertex string) {
-			defer wg.Done()
-			// timeout for checking watermark progression
-			isProgressing, err := isWatermarkProgressing(ctx, client, pipelineName, vertex, 3)
-			assert.NoError(s.T(), err, "TestWatermarkEnabled failed %s\n", err)
-			assert.Truef(s.T(), isProgressing, "isWatermarkProgressing\n")
-		}(vertex)
-	}
-	wg.Wait()
+	isProgressing, err := isWatermarkProgressing(ctx, client, pipelineName, vertexList, 3)
+	assert.NoError(s.T(), err, "TestWatermarkEnabled failed %s\n", err)
+	assert.Truef(s.T(), isProgressing, "isWatermarkProgressing\n")
 }
 
-// isWatermarkProgressing checks whether the watermark for a given vertex is progressing monotonically.
+// isWatermarkProgressing checks whether the watermark for each vertex in a pipeline is progressing monotonically.
 // progressCount is the number of progressions the watermark value should undertake within the timeout deadline for it
-// to be considered as valid.
-func isWatermarkProgressing(ctx context.Context, client *daemonclient.DaemonClient, pipelineName string, vertexName string, progressCount int) (bool, error) {
-	prevWatermark := int64(-1)
+func isWatermarkProgressing(ctx context.Context, client *daemonclient.DaemonClient, pipelineName string, vertexList []string, progressCount int) (bool, error) {
+	prevWatermark := make([]int64, len(vertexList))
+	for i := 0; i < len(vertexList); i++ {
+		prevWatermark[i] = -1
+	}
 	for i := 0; i < progressCount; i++ {
 		currentWatermark := prevWatermark
-		for currentWatermark <= prevWatermark {
-			wm, err := client.GetVertexWatermark(ctx, pipelineName, vertexName)
+		for func(current []int64, prev []int64) bool {
+			for j := 0; j < len(current); j++ {
+				if current[j] > prev[j] {
+					return false
+				}
+			}
+			return true
+		}(currentWatermark, prevWatermark) {
+			wm, err := client.GetPipelineWatermarks(ctx, pipelineName)
 			if err != nil {
 				return false, err
 			}
-			currentWatermark = *wm.Watermark
+			pipelineWatermarks := make([]int64, len(vertexList))
+			idx := 0
+			for _, v := range wm {
+				pipelineWatermarks[idx] = *v.Watermark
+				idx++
+			}
+			currentWatermark = pipelineWatermarks
 			select {
 			case <-ctx.Done():
 				return false, ctx.Err()

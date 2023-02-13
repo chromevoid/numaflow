@@ -19,7 +19,7 @@ package window
 import (
 	"time"
 
-	"github.com/numaproj/numaflow/pkg/pbq/partition"
+	"github.com/numaproj/numaflow/pkg/reduce/pbq/partition"
 )
 
 // AlignedKeyedWindower represents a bounded window (i.e., it will have a definite start and end time), and the
@@ -29,8 +29,8 @@ type AlignedKeyedWindower interface {
 	StartTime() time.Time
 	// EndTime returns the end time of the window
 	EndTime() time.Time
-	// AddKey adds a key to the window
-	AddKey(string)
+	// AddSlot adds a slot to the window. Slots are hash-ranges for keys.
+	AddSlot(string)
 	// Partitions returns an array of partition ids
 	Partitions() []partition.ID
 	// Keys returns an array of keys
@@ -42,10 +42,9 @@ type AlignedKeyedWindower interface {
 type Windower interface {
 	// AssignWindow assigns the event to the window based on give window configuration.
 	AssignWindow(eventTime time.Time) []AlignedKeyedWindower
-	// CreateWindow creates a window for a supplied interval
-	CreateWindow(aw AlignedKeyedWindower) AlignedKeyedWindower
-	// GetWindow returns a keyed window for a supplied interval
-	GetWindow(aw AlignedKeyedWindower) AlignedKeyedWindower
+	// InsertIfNotPresent inserts window to the list of active windows if not present
+	// if present it will return the window
+	InsertIfNotPresent(aw AlignedKeyedWindower) (AlignedKeyedWindower, bool)
 	// RemoveWindows returns list of window(s) that can be closed
 	RemoveWindows(time time.Time) []AlignedKeyedWindower
 }

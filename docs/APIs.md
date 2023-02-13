@@ -173,6 +173,34 @@ ServiceAccountName applied to the pod
 </p>
 </td>
 </tr>
+<tr>
+<td>
+<code>runtimeClassName</code></br> <em> string </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+RuntimeClassName refers to a RuntimeClass object in the node.k8s.io
+group, which should be used to run this pod. If no RuntimeClass resource
+matches the named class, the pod will not be run. If unset or empty, the
+“legacy” RuntimeClass will be used, which is an implicit class with an
+empty definition that uses the default runtime handler. More info:
+<a href="https://git.k8s.io/enhancements/keps/sig-node/585-runtime-class">https://git.k8s.io/enhancements/keps/sig-node/585-runtime-class</a>
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>automountServiceAccountToken</code></br> <em> bool </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+AutomountServiceAccountToken indicates whether a service account token
+should be automatically mounted.
+</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="numaflow.numaproj.io/v1alpha1.AbstractVertex">
@@ -367,6 +395,59 @@ needs to add “Authorization: Bearer <token>” in the header
 </tr>
 </tbody>
 </table>
+<h3 id="numaflow.numaproj.io/v1alpha1.BasicAuth">
+BasicAuth
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.NatsAuth">NatsAuth</a>)
+</p>
+<p>
+<p>
+BasicAuth represents the basic authentication approach which contains a
+user name and a password.
+</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>user</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#secretkeyselector-v1-core">
+Kubernetes core/v1.SecretKeySelector </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Secret for auth user
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>password</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#secretkeyselector-v1-core">
+Kubernetes core/v1.SecretKeySelector </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Secret for auth password
+</p>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="numaflow.numaproj.io/v1alpha1.Blackhole">
 Blackhole
 </h3>
@@ -480,9 +561,14 @@ Container
 <p>
 (<em>Appears on:</em>
 <a href="#numaflow.numaproj.io/v1alpha1.UDF">UDF</a>,
-<a href="#numaflow.numaproj.io/v1alpha1.UDSink">UDSink</a>)
+<a href="#numaflow.numaproj.io/v1alpha1.UDSink">UDSink</a>,
+<a href="#numaflow.numaproj.io/v1alpha1.UDTransformer">UDTransformer</a>)
 </p>
 <p>
+<p>
+Container is used to define the container properties for user defined
+functions, sinks, etc.
+</p>
 </p>
 <table>
 <thead>
@@ -550,6 +636,16 @@ Kubernetes core/v1.ResourceRequirements </a> </em>
 <em>(Optional)</em>
 </td>
 </tr>
+<tr>
+<td>
+<code>securityContext</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#securitycontext-v1-core">
+Kubernetes core/v1.SecurityContext </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="numaflow.numaproj.io/v1alpha1.ContainerTemplate">
@@ -587,6 +683,7 @@ Description
 Kubernetes core/v1.ResourceRequirements </a> </em>
 </td>
 <td>
+<em>(Optional)</em>
 </td>
 </tr>
 <tr>
@@ -596,6 +693,7 @@ Kubernetes core/v1.ResourceRequirements </a> </em>
 Kubernetes core/v1.PullPolicy </a> </em>
 </td>
 <td>
+<em>(Optional)</em>
 </td>
 </tr>
 <tr>
@@ -605,6 +703,7 @@ Kubernetes core/v1.PullPolicy </a> </em>
 Kubernetes core/v1.SecurityContext </a> </em>
 </td>
 <td>
+<em>(Optional)</em>
 </td>
 </tr>
 <tr>
@@ -614,6 +713,7 @@ Kubernetes core/v1.SecurityContext </a> </em>
 \[\]Kubernetes core/v1.EnvVar </a> </em>
 </td>
 <td>
+<em>(Optional)</em>
 </td>
 </tr>
 </tbody>
@@ -1469,7 +1569,6 @@ Window describes the windowing strategy.
 </em>
 </td>
 <td>
-<em>(Optional)</em>
 <p>
 Storage is used to define the PBQ storage for a reduce vertex.
 </p>
@@ -1941,7 +2040,7 @@ JetStream (NATS) URL
 <tr>
 <td>
 <code>auth</code></br> <em>
-<a href="#numaflow.numaproj.io/v1alpha1.NATSAuth"> NATSAuth </a> </em>
+<a href="#numaflow.numaproj.io/v1alpha1.NatsAuth"> NatsAuth </a> </em>
 </td>
 <td>
 </td>
@@ -2262,55 +2361,6 @@ Description
 </tr>
 </tbody>
 </table>
-<h3 id="numaflow.numaproj.io/v1alpha1.NATSAuth">
-NATSAuth
-</h3>
-<p>
-(<em>Appears on:</em>
-<a href="#numaflow.numaproj.io/v1alpha1.JetStreamConfig">JetStreamConfig</a>)
-</p>
-<p>
-</p>
-<table>
-<thead>
-<tr>
-<th>
-Field
-</th>
-<th>
-Description
-</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>
-<code>user</code></br> <em>
-<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#secretkeyselector-v1-core">
-Kubernetes core/v1.SecretKeySelector </a> </em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>
-Secret for auth user
-</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>password</code></br> <em>
-<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#secretkeyselector-v1-core">
-Kubernetes core/v1.SecretKeySelector </a> </em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>
-Secret for auth password
-</p>
-</td>
-</tr>
-</tbody>
-</table>
 <h3 id="numaflow.numaproj.io/v1alpha1.NativeRedis">
 NativeRedis
 </h3>
@@ -2441,6 +2491,149 @@ numaflow-controller-config will be used.
 </tr>
 </tbody>
 </table>
+<h3 id="numaflow.numaproj.io/v1alpha1.NatsAuth">
+NatsAuth
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.JetStreamConfig">JetStreamConfig</a>,
+<a href="#numaflow.numaproj.io/v1alpha1.NatsSource">NatsSource</a>)
+</p>
+<p>
+<p>
+NatsAuth defines how to authenticate the nats access
+</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>basic</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.BasicAuth"> BasicAuth </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Basic auth which contains a user name and a password
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>token</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#secretkeyselector-v1-core">
+Kubernetes core/v1.SecretKeySelector </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Token auth
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>nkey</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#secretkeyselector-v1-core">
+Kubernetes core/v1.SecretKeySelector </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+NKey auth
+</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="numaflow.numaproj.io/v1alpha1.NatsSource">
+NatsSource
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.Source">Source</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>url</code></br> <em> string </em>
+</td>
+<td>
+<p>
+URL to connect to NATS cluster, multiple urls could be separated by
+comma.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>subject</code></br> <em> string </em>
+</td>
+<td>
+<p>
+Subject holds the name of the subject onto which messages are published.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>queue</code></br> <em> string </em>
+</td>
+<td>
+<p>
+Queue is used for queue subscription.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>tls</code></br> <em> <a href="#numaflow.numaproj.io/v1alpha1.TLS">
+TLS </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+TLS configuration for the nats client.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>auth</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.NatsAuth"> NatsAuth </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Auth information
+</p>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="numaflow.numaproj.io/v1alpha1.PBQStorage">
 PBQStorage
 </h3>
@@ -2472,6 +2665,17 @@ Description
 PersistenceStrategy </a> </em>
 </td>
 <td>
+<em>(Optional)</em>
+</td>
+</tr>
+<tr>
+<td>
+<code>emptyDir</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#emptydirvolumesource-v1-core">
+Kubernetes core/v1.EmptyDirVolumeSource </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
 </td>
 </tr>
 </tbody>
@@ -3354,6 +3558,50 @@ Log </a> </em>
 </tr>
 </tbody>
 </table>
+<h3 id="numaflow.numaproj.io/v1alpha1.SlidingWindow">
+SlidingWindow
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.Window">Window</a>)
+</p>
+<p>
+<p>
+SlidingWindow describes a sliding window
+</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>length</code></br> <em>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
+Kubernetes meta/v1.Duration </a> </em>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<code>slide</code></br> <em>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
+Kubernetes meta/v1.Duration </a> </em>
+</td>
+<td>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="numaflow.numaproj.io/v1alpha1.Source">
 Source
 </h3>
@@ -3400,6 +3648,26 @@ GeneratorSource </a> </em>
 <code>http</code></br> <em>
 <a href="#numaflow.numaproj.io/v1alpha1.HTTPSource"> HTTPSource </a>
 </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+<tr>
+<td>
+<code>nats</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.NatsSource"> NatsSource </a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+<tr>
+<td>
+<code>transformer</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.UDTransformer"> UDTransformer
+</a> </em>
 </td>
 <td>
 <em>(Optional)</em>
@@ -3454,7 +3722,8 @@ TLS
 <p>
 (<em>Appears on:</em>
 <a href="#numaflow.numaproj.io/v1alpha1.KafkaSink">KafkaSink</a>,
-<a href="#numaflow.numaproj.io/v1alpha1.KafkaSource">KafkaSource</a>)
+<a href="#numaflow.numaproj.io/v1alpha1.KafkaSource">KafkaSource</a>,
+<a href="#numaflow.numaproj.io/v1alpha1.NatsSource">NatsSource</a>)
 </p>
 <p>
 </p>
@@ -3568,6 +3837,52 @@ JobTemplate is used to customize Jobs
 </tr>
 </tbody>
 </table>
+<h3 id="numaflow.numaproj.io/v1alpha1.Transformer">
+Transformer
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.UDTransformer">UDTransformer</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>name</code></br> <em> string </em>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<code>args</code></br> <em> \[\]string </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+<tr>
+<td>
+<code>kwargs</code></br> <em> map\[string\]string </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="numaflow.numaproj.io/v1alpha1.UDF">
 UDF
 </h3>
@@ -3645,6 +3960,48 @@ Description
 <a href="#numaflow.numaproj.io/v1alpha1.Container"> Container </a> </em>
 </td>
 <td>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="numaflow.numaproj.io/v1alpha1.UDTransformer">
+UDTransformer
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.Source">Source</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>container</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.Container"> Container </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+<tr>
+<td>
+<code>builtin</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.Transformer"> Transformer </a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
 </td>
 </tr>
 </tbody>
@@ -4118,6 +4475,16 @@ Description
 <code>fixed</code></br> <em>
 <a href="#numaflow.numaproj.io/v1alpha1.FixedWindow"> FixedWindow </a>
 </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+<tr>
+<td>
+<code>sliding</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.SlidingWindow"> SlidingWindow
+</a> </em>
 </td>
 <td>
 <em>(Optional)</em>

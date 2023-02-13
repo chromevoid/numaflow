@@ -29,12 +29,12 @@ import (
 	"go.uber.org/zap"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
+	"github.com/numaproj/numaflow/pkg/forward"
+	"github.com/numaproj/numaflow/pkg/forward/applier"
 	"github.com/numaproj/numaflow/pkg/isb"
-	"github.com/numaproj/numaflow/pkg/isb/forward"
-	metricspkg "github.com/numaproj/numaflow/pkg/metrics"
+	"github.com/numaproj/numaflow/pkg/metrics"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
 	sharedutil "github.com/numaproj/numaflow/pkg/shared/util"
-	"github.com/numaproj/numaflow/pkg/udf/applier"
 	"github.com/numaproj/numaflow/pkg/watermark/fetch"
 	"github.com/numaproj/numaflow/pkg/watermark/processor"
 	"github.com/numaproj/numaflow/pkg/watermark/publish"
@@ -121,11 +121,6 @@ func (r *KafkaSource) GetName() string {
 	return r.name
 }
 
-// Read reads a chunk of messages and returns at the first occurrence of an error. Error does not indicate that the
-// array of result is empty, the callee should process all the elements in the array even if the error is set. Read
-// will not mark the message in the buffer as "READ" if the read for that index is erring.
-// There is a chance that we have read the message and the container got forcefully terminated before processing. To provide
-// at-least-once semantics for reading, during restart we will have to reprocess all unacknowledged messages.
 func (r *KafkaSource) Read(_ context.Context, count int64) ([]*isb.ReadMessage, error) {
 	// It stores latest timestamps for different partitions
 	oldestTimestamps := make(map[int32]time.Time)
@@ -135,7 +130,7 @@ loop:
 	for i := int64(0); i < count; i++ {
 		select {
 		case m := <-r.handler.messages:
-			kafkaSourceReadCount.With(map[string]string{metricspkg.LabelVertex: r.name, metricspkg.LabelPipeline: r.pipelineName}).Inc()
+			kafkaSourceReadCount.With(map[string]string{metrics.LabelVertex: r.name, metrics.LabelPipeline: r.pipelineName}).Inc()
 			_m := toReadMessage(m)
 			msgs = append(msgs, _m)
 			// Get latest timestamps for different partitions
@@ -149,14 +144,14 @@ loop:
 		}
 	}
 	for p, t := range oldestTimestamps {
-		publisher := r.loadSourceWartermarkPublisher(p)
+		publisher := r.loadSourceWatermarkPublisher(p)
 		publisher.PublishWatermark(processor.Watermark(t), nil) // Source publisher does not care about the offset
 	}
 	return msgs, nil
 }
 
-// loadSourceWartermarkPublisher does a lazy load on the wartermark publisher
-func (r *KafkaSource) loadSourceWartermarkPublisher(partitionID int32) publish.Publisher {
+// loadSourceWatermarkPublisher does a lazy load on the watermark publisher
+func (r *KafkaSource) loadSourceWatermarkPublisher(partitionID int32) publish.Publisher {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 	if p, ok := r.sourcePublishWMs[partitionID]; ok {
@@ -178,14 +173,14 @@ func (r *KafkaSource) Ack(_ context.Context, offsets []isb.Offset) []error {
 	for _, offset := range offsets {
 		topic, partition, poffset, err := offsetFrom(offset.String())
 		if err != nil {
-			kafkaSourceOffsetAckErrors.With(map[string]string{metricspkg.LabelVertex: r.name, metricspkg.LabelPipeline: r.pipelineName}).Inc()
+			kafkaSourceOffsetAckErrors.With(map[string]string{metrics.LabelVertex: r.name, metrics.LabelPipeline: r.pipelineName}).Inc()
 			r.logger.Errorw("Unable to extract partition offset of type int64 from the supplied offset. skipping and continuing", zap.String("suppliedoffset", offset.String()), zap.Error(err))
 			continue
 		}
 
 		// we need to mark the offset of the next message to read
 		r.handler.sess.MarkOffset(topic, partition, poffset+1, "")
-		kafkaSourceAckCount.With(map[string]string{metricspkg.LabelVertex: r.name, metricspkg.LabelPipeline: r.pipelineName}).Inc()
+		kafkaSourceAckCount.With(map[string]string{metrics.LabelVertex: r.name, metrics.LabelPipeline: r.pipelineName}).Inc()
 
 	}
 	// How come it does not return errors at all?
@@ -262,7 +257,16 @@ func (r *KafkaSource) Pending(ctx context.Context) (int64, error) {
 }
 
 // NewKafkaSource returns a KafkaSource reader based on Kafka Consumer Group .
-func NewKafkaSource(vertexInstance *dfv1.VertexInstance, writers []isb.BufferWriter, fetchWM fetch.Fetcher, publishWM map[string]publish.Publisher, publishWMStores store.WatermarkStorer, opts ...Option) (*KafkaSource, error) {
+func NewKafkaSource(
+	vertexInstance *dfv1.VertexInstance,
+	writers []isb.BufferWriter,
+	fsd forward.ToWhichStepDecider,
+	mapApplier applier.MapApplier,
+	fetchWM fetch.Fetcher,
+	publishWM map[string]publish.Publisher,
+	publishWMStores store.WatermarkStorer,
+	opts ...Option) (*KafkaSource, error) {
+
 	source := vertexInstance.Vertex.Spec.Source.Kafka
 	kafkasource := &KafkaSource{
 		name:               vertexInstance.Vertex.Spec.Name,
@@ -333,7 +337,7 @@ func NewKafkaSource(vertexInstance *dfv1.VertexInstance, writers []isb.BufferWri
 			forwardOpts = append(forwardOpts, forward.WithReadBatchSize(int64(*x.ReadBatchSize)))
 		}
 	}
-	forwarder, err := forward.NewInterStepDataForward(vertexInstance.Vertex, kafkasource, destinations, forward.All, applier.Terminal, fetchWM, publishWM, forwardOpts...)
+	forwarder, err := forward.NewInterStepDataForward(vertexInstance.Vertex, kafkasource, destinations, fsd, mapApplier, fetchWM, publishWM, forwardOpts...)
 	if err != nil {
 		kafkasource.logger.Errorw("Error instantiating the forwarder", zap.Error(err))
 		return nil, err

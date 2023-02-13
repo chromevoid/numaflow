@@ -20,10 +20,11 @@ import (
 	"encoding/base64"
 	"fmt"
 
-	"github.com/numaproj/numaflow/pkg/shared/logging"
-	"github.com/numaproj/numaflow/pkg/udf/builtin"
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
+
+	"github.com/numaproj/numaflow/pkg/shared/logging"
+	"github.com/numaproj/numaflow/pkg/udf/builtin"
 )
 
 func NewBuiltinUDFCommand() *cobra.Command {

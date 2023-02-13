@@ -21,18 +21,20 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/numaproj/numaflow-go/pkg/function/client"
 	"go.uber.org/zap"
+
+	"github.com/numaproj/numaflow/pkg/forward"
+	"github.com/numaproj/numaflow/pkg/metrics"
+	"github.com/numaproj/numaflow/pkg/reduce/pbq/store/wal"
+
+	"github.com/numaproj/numaflow/pkg/reduce/pbq"
+	"github.com/numaproj/numaflow/pkg/window/strategy/fixed"
+	"github.com/numaproj/numaflow/pkg/window/strategy/sliding"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 	"github.com/numaproj/numaflow/pkg/isb"
-	"github.com/numaproj/numaflow/pkg/isb/forward"
-	"github.com/numaproj/numaflow/pkg/metrics"
-	"github.com/numaproj/numaflow/pkg/pbq"
-	"github.com/numaproj/numaflow/pkg/pbq/store"
-	"github.com/numaproj/numaflow/pkg/pbq/store/memory"
-	"github.com/numaproj/numaflow/pkg/pbq/store/wal"
 	"github.com/numaproj/numaflow/pkg/reduce"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
 	sharedutil "github.com/numaproj/numaflow/pkg/shared/util"
@@ -41,7 +43,6 @@ import (
 	"github.com/numaproj/numaflow/pkg/watermark/generic"
 	"github.com/numaproj/numaflow/pkg/watermark/generic/jetstream"
 	"github.com/numaproj/numaflow/pkg/window"
-	"github.com/numaproj/numaflow/pkg/window/strategy/fixed"
 )
 
 type ReduceUDFProcessor struct {
@@ -54,9 +55,15 @@ func (u *ReduceUDFProcessor) Start(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var windower window.Windower
-	if x := u.VertexInstance.Vertex.Spec.UDF.GroupBy.Window.Fixed; x != nil {
-		windower = fixed.NewFixed(x.Length.Duration)
+	f := u.VertexInstance.Vertex.Spec.UDF.GroupBy.Window.Fixed
+	s := u.VertexInstance.Vertex.Spec.UDF.GroupBy.Window.Sliding
+
+	if f != nil {
+		windower = fixed.NewFixed(f.Length.Duration)
+	} else if s != nil {
+		windower = sliding.NewSliding(s.Length.Duration, s.Slide.Duration)
 	}
+
 	if windower == nil {
 		return fmt.Errorf("invalid window spec")
 	}
@@ -123,13 +130,20 @@ func (u *ReduceUDFProcessor) Start(ctx context.Context) error {
 	})
 
 	log = log.With("protocol", "uds-grpc-reduce-udf")
-	udfHandler, err := function.NewUDSGRPCBasedUDF()
+
+	maxMessageSize := sharedutil.LookupEnvIntOr(dfv1.EnvGRPCMaxMessageSize, dfv1.DefaultGRPCMaxMessageSize)
+	c, err := client.New(client.WithMaxMessageSize(maxMessageSize))
+	if err != nil {
+		return fmt.Errorf("failed to create a new gRPC client: %w", err)
+	}
+
+	udfHandler, err := function.NewUDSgRPCBasedUDF(c)
 	if err != nil {
 		return fmt.Errorf("failed to create gRPC client, %w", err)
 	}
 	// Readiness check
 	if err := udfHandler.WaitUntilReady(ctx); err != nil {
-		return fmt.Errorf("failed on UDF readiness check, %w", err)
+		return fmt.Errorf("failed on FIXED_AGGREGATION readiness check, %w", err)
 	}
 	defer func() {
 		err = udfHandler.CloseConn(ctx)
@@ -139,15 +153,18 @@ func (u *ReduceUDFProcessor) Start(ctx context.Context) error {
 	}()
 	log.Infow("Start processing reduce udf messages", zap.String("isbsvc", string(u.ISBSvcType)), zap.String("from", fromBuffer.Name))
 
-	var storeProvider store.StoreProvider
-	if storage := u.VertexInstance.Vertex.Spec.UDF.GroupBy.Storage; storage != nil && storage.PersistentVolumeClaim != nil {
-		storeProvider = wal.NewWALStores(u.VertexInstance, wal.WithStorePath(dfv1.DefaultStorePath), wal.WithMaxBufferSize(dfv1.DefaultStoreMaxBufferSize), wal.WithSyncDuration(dfv1.DefaultStoreSyncDuration))
+	// start metrics server
+	metricsOpts := metrics.NewMetricsOptions(ctx, u.VertexInstance.Vertex, udfHandler, reader, nil)
+	ms := metrics.NewMetricsServer(u.VertexInstance.Vertex, metricsOpts...)
+	if shutdown, err := ms.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start metrics server, error: %w", err)
 	} else {
-		// use in memory type by default
-		storeProvider = memory.NewMemoryStores()
+		defer func() { _ = shutdown(context.Background()) }()
 	}
 
-	pbqManager, err := pbq.NewManager(ctx, storeProvider)
+	storeProvider := wal.NewWALStores(u.VertexInstance, wal.WithStorePath(dfv1.DefaultStorePath), wal.WithMaxBufferSize(dfv1.DefaultStoreMaxBufferSize), wal.WithSyncDuration(dfv1.DefaultStoreSyncDuration))
+
+	pbqManager, err := pbq.NewManager(ctx, u.VertexInstance.Vertex.Spec.Name, u.VertexInstance.Vertex.Spec.PipelineName, u.VertexInstance.Replica, storeProvider)
 	if err != nil {
 		log.Errorw("Failed to create pbq manager", zap.Error(err))
 		return fmt.Errorf("failed to create pbq manager, %w", err)
@@ -167,30 +184,9 @@ func (u *ReduceUDFProcessor) Start(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		dataForwarder.Start(ctx)
+		dataForwarder.Start()
 		log.Info("Forwarder stopped, exiting reduce udf data processor...")
 	}()
-
-	metricsOpts := []metrics.Option{
-		metrics.WithLookbackSeconds(int64(u.VertexInstance.Vertex.Spec.Scale.GetLookbackSeconds())),
-		metrics.WithHealthCheckExecutor(func() error {
-			cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-			defer cancel()
-			return udfHandler.WaitUntilReady(cctx)
-		}),
-	}
-	if x, ok := reader.(isb.LagReader); ok {
-		metricsOpts = append(metricsOpts, metrics.WithLagReader(x))
-	}
-	if x, ok := reader.(isb.Ratable); ok {
-		metricsOpts = append(metricsOpts, metrics.WithRater(x))
-	}
-	ms := metrics.NewMetricsServer(u.VertexInstance.Vertex, metricsOpts...)
-	if shutdown, err := ms.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start metrics server, error: %w", err)
-	} else {
-		defer func() { _ = shutdown(context.Background()) }()
-	}
 
 	<-ctx.Done()
 	log.Info("SIGTERM, exiting...")

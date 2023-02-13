@@ -2,6 +2,8 @@ CURRENT_DIR=$(shell pwd)
 DIST_DIR=${CURRENT_DIR}/dist
 BINARY_NAME:=numaflow
 DOCKERFILE:=Dockerfile
+DEV_BASE_IMAGE:=alpine:3.17
+RELEASE_BASE_IMAGE:=scratch
 
 BUILD_DATE=$(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 GIT_COMMIT=$(shell git rev-parse HEAD)
@@ -90,19 +92,21 @@ test-coverage:
 
 .PHONY: test-coverage-with-isb
 test-coverage-with-isb:
-	go test -covermode=atomic -coverprofile=test/profile.cov.tmp -tags=isb_redis,isb_jetstream $(shell go list ./... | grep -v /vendor/ | grep -v /numaflow/test/ | grep -v /pkg/client/ | grep -v /pkg/proto/ | grep -v /hack/)
+	go test -covermode=atomic -coverprofile=test/profile.cov.tmp -tags=isb_redis $(shell go list ./... | grep -v /vendor/ | grep -v /numaflow/test/ | grep -v /pkg/client/ | grep -v /pkg/proto/ | grep -v /hack/)
 	cat test/profile.cov.tmp | grep -v v1alpha1/zz_generated | grep -v v1alpha1/generated > test/profile.cov
 	rm test/profile.cov.tmp
 	go tool cover -func=test/profile.cov
 
 .PHONY: test-code
 test-code:
-	go test -tags=isb_redis,isb_jetstream -race -v $(shell go list ./... | grep -v /vendor/ | grep -v /numaflow/test/)
+	go test -tags=isb_redis -race -v $(shell go list ./... | grep -v /vendor/ | grep -v /numaflow/test/)
 
 test-e2e:
 test-kafka-e2e:
 test-http-e2e:
+test-nats-e2e:
 test-sdks-e2e:
+test-reduce-e2e:
 test-%: 
 	$(MAKE) cleanup-e2e
 	$(MAKE) image e2eapi-image
@@ -143,20 +147,14 @@ ui-test: ui-build
 
 .PHONY: image
 image: clean ui-build dist/$(BINARY_NAME)-linux-amd64
-	DOCKER_BUILDKIT=1 $(DOCKER) build --build-arg "ARCH=amd64" -t $(IMAGE_NAMESPACE)/$(BINARY_NAME):$(VERSION) --target $(BINARY_NAME) -f $(DOCKERFILE) .
+	DOCKER_BUILDKIT=1 $(DOCKER) build --build-arg "ARCH=amd64" --build-arg "BASE_IMAGE=$(DEV_BASE_IMAGE)" -t $(IMAGE_NAMESPACE)/$(BINARY_NAME):$(VERSION) --target $(BINARY_NAME) -f $(DOCKERFILE) .
 	@if [ "$(DOCKER_PUSH)" = "true" ]; then $(DOCKER) push $(IMAGE_NAMESPACE)/$(BINARY_NAME):$(VERSION); fi
 ifdef IMAGE_IMPORT_CMD
 	$(IMAGE_IMPORT_CMD) $(IMAGE_NAMESPACE)/$(BINARY_NAME):$(VERSION)
 endif
 
-image-linux-%: dist/$(BINARY_NAME)-linux-$*
-	DOCKER_BUILDKIT=1 $(DOCKER) build --build-arg "ARCH=$*" -t $(IMAGE_NAMESPACE)/$(BINARY_NAME):$(VERSION)-linux-$* --platform "linux/$*" --target $(BINARY_NAME) -f $(DOCKERFILE) .
-	@if [ "$(DOCKER_PUSH)" = "true" ]; then $(DOCKER) push $(IMAGE_NAMESPACE)/$(BINARY_NAME):$(VERSION)-linux-$*; fi
-
-
 image-multi: ui-build set-qemu dist/$(BINARY_NAME)-linux-arm64.gz dist/$(BINARY_NAME)-linux-amd64.gz
-	$(DOCKER) buildx build --tag $(IMAGE_NAMESPACE)/$(BINARY_NAME):$(VERSION) --target $(BINARY_NAME) --platform linux/amd64,linux/arm64 --file ./Dockerfile ${PUSH_OPTION} .
-
+	$(DOCKER) buildx build --sbom=false --provenance=false --build-arg "BASE_IMAGE=$(RELEASE_BASE_IMAGE)" --tag $(IMAGE_NAMESPACE)/$(BINARY_NAME):$(VERSION) --target $(BINARY_NAME) --platform linux/amd64,linux/arm64 --file ./Dockerfile ${PUSH_OPTION} .
 
 set-qemu:
 	$(DOCKER) pull tonistiigi/binfmt:latest
@@ -213,7 +211,7 @@ start: image
 
 .PHONY: e2eapi-image
 e2eapi-image: clean dist/e2eapi
-	DOCKER_BUILDKIT=1 $(DOCKER) build . --build-arg "ARCH=amd64" --platform=linux/amd64 --target e2eapi --tag $(IMAGE_NAMESPACE)/e2eapi:$(VERSION) --build-arg VERSION="$(VERSION)"
+	DOCKER_BUILDKIT=1 $(DOCKER) build . --build-arg "ARCH=amd64" --target e2eapi --tag $(IMAGE_NAMESPACE)/e2eapi:$(VERSION) --build-arg VERSION="$(VERSION)"
 	@if [ "$(DOCKER_PUSH)" = "true" ]; then $(DOCKER) push $(IMAGE_NAMESPACE)/e2eapi:$(VERSION); fi
 ifdef IMAGE_IMPORT_CMD
 	$(IMAGE_IMPORT_CMD) $(IMAGE_NAMESPACE)/e2eapi:$(VERSION)
@@ -248,7 +246,7 @@ pre-push: codegen lint
 
 .PHONY: checksums
 checksums:
-	for f in ./dist/$(BINARY_NAME)-*.gz; do openssl dgst -sha256 "$$f" | awk ' { print $$2 }' > "$$f".sha256 ; done
+	sha256sum ./dist/$(BINARY_NAME)-*.gz | awk -F './dist/' '{print $$1 $$2}' > ./dist/$(BINARY_NAME)-checksums.txt
 
 # release - targets only available on release branch
 ifneq ($(findstring release,$(GIT_BRANCH)),)

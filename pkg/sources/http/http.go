@@ -29,13 +29,13 @@ import (
 	"go.uber.org/zap"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
+	"github.com/numaproj/numaflow/pkg/forward"
+	"github.com/numaproj/numaflow/pkg/forward/applier"
 	"github.com/numaproj/numaflow/pkg/isb"
-	"github.com/numaproj/numaflow/pkg/isb/forward"
-	metricspkg "github.com/numaproj/numaflow/pkg/metrics"
+	"github.com/numaproj/numaflow/pkg/metrics"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
 	sharedtls "github.com/numaproj/numaflow/pkg/shared/tls"
 	sharedutil "github.com/numaproj/numaflow/pkg/shared/util"
-	"github.com/numaproj/numaflow/pkg/udf/applier"
 	"github.com/numaproj/numaflow/pkg/watermark/fetch"
 	"github.com/numaproj/numaflow/pkg/watermark/processor"
 	"github.com/numaproj/numaflow/pkg/watermark/publish"
@@ -50,13 +50,12 @@ type httpSource struct {
 	bufferSize   int
 	messages     chan *isb.ReadMessage
 	logger       *zap.SugaredLogger
-
-	forwarder *forward.InterStepDataForward
+	forwarder    *forward.InterStepDataForward
 	// source watermark publisher
 	sourcePublishWM publish.Publisher
 	// context cancel function
-	cancelfn context.CancelFunc
-	shutdown func(context.Context) error
+	cancelFunc context.CancelFunc
+	shutdown   func(context.Context) error
 }
 
 type Option func(*httpSource) error
@@ -84,7 +83,16 @@ func WithBufferSize(s int) Option {
 	}
 }
 
-func New(vertexInstance *dfv1.VertexInstance, writers []isb.BufferWriter, fetchWM fetch.Fetcher, publishWM map[string]publish.Publisher, publishWMStores store.WatermarkStorer, opts ...Option) (*httpSource, error) {
+func New(
+	vertexInstance *dfv1.VertexInstance,
+	writers []isb.BufferWriter,
+	fsd forward.ToWhichStepDecider,
+	mapApplier applier.MapApplier,
+	fetchWM fetch.Fetcher,
+	publishWM map[string]publish.Publisher,
+	publishWMStores store.WatermarkStorer,
+	opts ...Option) (*httpSource, error) {
+
 	h := &httpSource{
 		name:         vertexInstance.Vertex.Spec.Name,
 		pipelineName: vertexInstance.Vertex.Spec.PipelineName,
@@ -108,34 +116,30 @@ func New(vertexInstance *dfv1.VertexInstance, writers []isb.BufferWriter, fetchW
 		if s, err := sharedutil.GetSecretFromVolume(x.Token); err != nil {
 			return nil, fmt.Errorf("failed to get auth token, %w", err)
 		} else {
-			auth = string(s)
+			auth = s
 		}
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if !h.ready {
-			w.WriteHeader(503)
-			_, _ = w.Write([]byte("503 not ready\n"))
+			http.Error(w, "http source not ready", http.StatusServiceUnavailable)
 			return
 		}
-		w.WriteHeader(204)
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/vertices/"+vertexInstance.Vertex.Spec.Name, func(w http.ResponseWriter, r *http.Request) {
 		if auth != "" && r.Header.Get("Authorization") != "Bearer "+auth {
-			w.WriteHeader(403)
-			_, _ = w.Write([]byte("403 forbidden\n"))
+			http.Error(w, "request not authorized", http.StatusForbidden)
 			return
 		}
 		if !h.ready {
-			w.WriteHeader(503)
-			_, _ = w.Write([]byte("503 not ready\n"))
+			http.Error(w, "http source not ready", http.StatusServiceUnavailable)
 			return
 		}
 		msg, err := io.ReadAll(r.Body)
 		_ = r.Body.Close()
 		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(err.Error()))
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
@@ -147,8 +151,7 @@ func New(vertexInstance *dfv1.VertexInstance, writers []isb.BufferWriter, fetchW
 		if x := r.Header.Get(dfv1.KeyMetaEventTime); x != "" {
 			i, err := strconv.ParseInt(x, 10, 64)
 			if err != nil {
-				w.WriteHeader(http.StatusBadRequest)
-				_, _ = w.Write([]byte(err.Error()))
+				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			eventTime = time.UnixMilli(i)
@@ -197,14 +200,15 @@ func New(vertexInstance *dfv1.VertexInstance, writers []isb.BufferWriter, fetchW
 			forwardOpts = append(forwardOpts, forward.WithReadBatchSize(int64(*x.ReadBatchSize)))
 		}
 	}
-	forwarder, err := forward.NewInterStepDataForward(vertexInstance.Vertex, h, destinations, forward.All, applier.Terminal, fetchWM, publishWM, forwardOpts...)
+
+	h.forwarder, err = forward.NewInterStepDataForward(vertexInstance.Vertex, h, destinations, fsd, mapApplier, fetchWM, publishWM, forwardOpts...)
 	if err != nil {
 		h.logger.Errorw("Error instantiating the forwarder", zap.Error(err))
 		return nil, err
 	}
-	h.forwarder = forwarder
+
 	ctx, cancel := context.WithCancel(context.Background())
-	h.cancelfn = cancel
+	h.cancelFunc = cancel
 	entityName := fmt.Sprintf("%s-%d", vertexInstance.Vertex.Name, vertexInstance.Replica)
 	processorEntity := processor.NewProcessorEntity(entityName)
 	h.sourcePublishWM = publish.NewPublish(ctx, processorEntity, publishWMStores, publish.IsSource(), publish.WithDelay(vertexInstance.Vertex.Spec.Watermark.GetMaxDelay()))
@@ -227,7 +231,8 @@ loop:
 				oldest = m.EventTime
 			}
 			msgs = append(msgs, m)
-			httpSourceReadCount.With(map[string]string{metricspkg.LabelVertex: h.name, metricspkg.LabelPipeline: h.pipelineName}).Inc()
+			fmt.Println("got a message to read")
+			httpSourceReadCount.With(map[string]string{metrics.LabelVertex: h.name, metrics.LabelPipeline: h.pipelineName}).Inc()
 		case <-timeout:
 			h.logger.Debugw("Timed out waiting for messages to read.", zap.Duration("waited", h.readTimeout), zap.Int("read", len(msgs)))
 			break loop
@@ -246,7 +251,7 @@ func (h *httpSource) Ack(_ context.Context, offsets []isb.Offset) []error {
 
 func (h *httpSource) Close() error {
 	h.logger.Info("Shutting down http source server...")
-	h.cancelfn()
+	h.cancelFunc()
 	close(h.messages)
 	if err := h.shutdown(context.Background()); err != nil {
 		return err

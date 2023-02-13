@@ -19,20 +19,21 @@ package readloop
 import (
 	"container/list"
 	"context"
+	"strconv"
 	"sync"
 	"time"
 
 	"go.uber.org/zap"
 
+	"github.com/numaproj/numaflow/pkg/forward"
 	"github.com/numaproj/numaflow/pkg/isb"
-	"github.com/numaproj/numaflow/pkg/isb/forward"
-	"github.com/numaproj/numaflow/pkg/watermark/publish"
-
-	"github.com/numaproj/numaflow/pkg/pbq"
-	"github.com/numaproj/numaflow/pkg/pbq/partition"
+	"github.com/numaproj/numaflow/pkg/metrics"
+	"github.com/numaproj/numaflow/pkg/reduce/applier"
+	"github.com/numaproj/numaflow/pkg/reduce/pbq"
+	"github.com/numaproj/numaflow/pkg/reduce/pbq/partition"
 	"github.com/numaproj/numaflow/pkg/reduce/pnf"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
-	"github.com/numaproj/numaflow/pkg/udf/applier"
+	"github.com/numaproj/numaflow/pkg/watermark/publish"
 )
 
 var retryDelay = 1 * time.Second
@@ -47,6 +48,9 @@ type task struct {
 // orderedForwarder orders the forwarding of the result of the execution of the tasks, even though the tasks itself are
 // run concurrently in an out of ordered fashion.
 type orderedForwarder struct {
+	vertexName    string
+	pipelineName  string
+	vertexReplica int32
 	sync.RWMutex
 	taskDone  chan struct{}
 	taskQueue *list.List
@@ -54,17 +58,25 @@ type orderedForwarder struct {
 }
 
 // newOrderedForwarder returns an orderedForwarder.
-func newOrderedForwarder(ctx context.Context) *orderedForwarder {
-	return &orderedForwarder{
-		taskDone:  make(chan struct{}),
-		taskQueue: list.New(),
-		log:       logging.FromContext(ctx),
+func newOrderedForwarder(ctx context.Context, vertexName string, pipelineName string, vr int32) *orderedForwarder {
+	of := &orderedForwarder{
+		vertexName:    vertexName,
+		pipelineName:  pipelineName,
+		vertexReplica: vr,
+		taskDone:      make(chan struct{}),
+		taskQueue:     list.New(),
+		log:           logging.FromContext(ctx),
 	}
+
+	go of.forward(ctx)
+
+	return of
 }
 
-// startUp starts forwarder.
-func (of *orderedForwarder) startUp(ctx context.Context) {
-	go of.forward(ctx)
+func (of *orderedForwarder) insertTask(t *task) {
+	of.Lock()
+	defer of.Unlock()
+	of.taskQueue.PushBack(t)
 }
 
 // schedulePnF creates and schedules the PnF routine.
@@ -74,27 +86,28 @@ func (of *orderedForwarder) schedulePnF(ctx context.Context,
 	partitionID partition.ID,
 	toBuffers map[string]isb.BufferWriter,
 	whereToDecider forward.ToWhichStepDecider,
-	pw map[string]publish.Publisher) {
+	pw map[string]publish.Publisher) *task {
 
-	pf := pnf.NewProcessAndForward(ctx, partitionID, udf, pbq, toBuffers, whereToDecider, pw)
+	pf := pnf.NewProcessAndForward(ctx, of.vertexName, of.pipelineName, of.vertexReplica, partitionID, udf, pbq, toBuffers, whereToDecider, pw)
 	doneCh := make(chan struct{})
 	t := &task{
 		doneCh: doneCh,
 		pf:     pf,
 	}
-
-	of.Lock()
-	defer of.Unlock()
-	of.taskQueue.PushBack(t)
+	partitionsInFlight.With(map[string]string{
+		metrics.LabelVertex:             of.vertexName,
+		metrics.LabelPipeline:           of.pipelineName,
+		metrics.LabelVertexReplicaIndex: strconv.Itoa(int(of.vertexReplica)),
+	}).Inc()
 
 	// invoke the reduce function
 	go of.reduceOp(ctx, t)
+	return t
 }
 
 // reduceOp invokes the reduce function. The reducer is a long running function since we stream in the data and it has
 // to wait for the close-of-book on the PBQ to materialize the result.
 func (of *orderedForwarder) reduceOp(ctx context.Context, t *task) {
-	// TODO: better logging with partitionID?
 	start := time.Now()
 	for {
 		// FIXME: this error handling won't work with streams. We cannot do infinite retries
@@ -103,15 +116,21 @@ func (of *orderedForwarder) reduceOp(ctx context.Context, t *task) {
 		if err == nil {
 			break
 		} else if err == ctx.Err() {
+			udfError.With(map[string]string{
+				metrics.LabelVertex:             of.vertexName,
+				metrics.LabelPipeline:           of.pipelineName,
+				metrics.LabelVertexReplicaIndex: strconv.Itoa(int(of.vertexReplica)),
+			}).Inc()
 			of.log.Infow("ReduceOp exiting", zap.String("partitionID", t.pf.PartitionID.String()), zap.Error(ctx.Err()))
 			return
 		}
 		of.log.Errorw("Process failed", zap.String("partitionID", t.pf.PartitionID.String()), zap.Error(err))
 		time.Sleep(retryDelay)
 	}
-	// after retrying indicate that we are done with processing the package. the processing can move on
+	// indicate that we are done with reduce UDF invocation.
 	close(t.doneCh)
 	of.log.Debugw("Process->Reduce call took ", zap.String("partitionID", t.pf.PartitionID.String()), zap.Int64("duration(ms)", time.Since(start).Milliseconds()))
+
 	// notify that some work has been completed
 	select {
 	case of.taskDone <- struct{}{}:
@@ -173,6 +192,12 @@ func (of *orderedForwarder) forward(ctx context.Context) {
 				rm := currElement
 				currElement = currElement.Next()
 				of.taskQueue.Remove(rm)
+				partitionsInFlight.With(map[string]string{
+					metrics.LabelVertex:             of.vertexName,
+					metrics.LabelPipeline:           of.pipelineName,
+					metrics.LabelVertexReplicaIndex: strconv.Itoa(int(of.vertexReplica)),
+				}).Dec()
+
 				of.log.Debugw("Removing task post forward call", zap.String("partitionID", t.pf.PartitionID.String()))
 				of.Unlock()
 			case <-ctx.Done():

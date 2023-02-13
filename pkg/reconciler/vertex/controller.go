@@ -23,11 +23,6 @@ import (
 	"strings"
 	"time"
 
-	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
-	"github.com/numaproj/numaflow/pkg/reconciler"
-	"github.com/numaproj/numaflow/pkg/reconciler/vertex/scaling"
-	"github.com/numaproj/numaflow/pkg/shared/logging"
-	sharedutil "github.com/numaproj/numaflow/pkg/shared/util"
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -39,6 +34,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
+	"github.com/numaproj/numaflow/pkg/reconciler"
+	"github.com/numaproj/numaflow/pkg/reconciler/vertex/scaling"
+	"github.com/numaproj/numaflow/pkg/shared/logging"
+	sharedutil "github.com/numaproj/numaflow/pkg/shared/util"
 )
 
 // vertexReconciler reconciles a vertex object.
@@ -120,7 +121,6 @@ func (r *vertexReconciler) reconcile(ctx context.Context, vertex *dfv1.Vertex) (
 
 	desiredReplicas := vertex.GetReplicas()
 
-	// Create PVC if needed for reduce vertices
 	if vertex.IsReduceUDF() {
 		if x := vertex.Spec.UDF.GroupBy.Storage; x != nil && x.PersistentVolumeClaim != nil {
 			for i := 0; i < desiredReplicas; i++ {
@@ -215,6 +215,14 @@ func (r *vertexReconciler) reconcile(ctx context.Context, vertex *dfv1.Vertex) (
 			labels[dfv1.KeyVertexName] = vertex.Spec.Name
 			annotations[dfv1.KeyHash] = hash
 			annotations[dfv1.KeyReplica] = strconv.Itoa(replica)
+			if vertex.IsMapUDF() || vertex.IsReduceUDF() {
+				annotations[dfv1.KeyDefaultContainer] = dfv1.CtrUdf
+			} else if vertex.IsUDSink() {
+				annotations[dfv1.KeyDefaultContainer] = dfv1.CtrUdsink
+			} else if vertex.HasUDTransformer() {
+				// Once we have UDSource in place, replace it with UDSource?
+				annotations[dfv1.KeyDefaultContainer] = dfv1.CtrUdtransformer
+			}
 			pod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace:       vertex.Namespace,
@@ -303,11 +311,7 @@ func (r *vertexReconciler) buildReduceVertexPVCSpec(vertex *dfv1.Vertex, replica
 	if !vertex.IsReduceUDF() {
 		return nil, fmt.Errorf("not a reduce UDF")
 	}
-	if x := vertex.Spec.UDF.GroupBy.Storage; x == nil {
-		return nil, fmt.Errorf("storage is not configured for the reduce UDF")
-	} else if x.PersistentVolumeClaim == nil {
-		return nil, fmt.Errorf("persistentVolumeClaim is not configured for the reduce UDF storge")
-	}
+
 	pvcName := dfv1.GeneratePBQStoragePVCName(vertex.Spec.PipelineName, vertex.Spec.Name, replicaIndex)
 	newPvc := vertex.Spec.UDF.GroupBy.Storage.PersistentVolumeClaim.GetPVCSpec(pvcName)
 	newPvc.SetNamespace(vertex.Namespace)
@@ -341,8 +345,9 @@ func (r *vertexReconciler) buildPodSpec(vertex *dfv1.Vertex, pl *dfv1.Pipeline, 
 
 	if vertex.IsReduceUDF() {
 		// Add pvc for reduce vertex pods
-		if x := vertex.Spec.UDF.GroupBy.Storage; x != nil && x.PersistentVolumeClaim != nil {
-			volName := "pbq-vol"
+		storage := vertex.Spec.UDF.GroupBy.Storage
+		volName := "pbq-vol"
+		if storage.PersistentVolumeClaim != nil {
 			podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
 				Name: volName,
 				VolumeSource: corev1.VolumeSource{
@@ -351,11 +356,16 @@ func (r *vertexReconciler) buildPodSpec(vertex *dfv1.Vertex, pl *dfv1.Pipeline, 
 					},
 				},
 			})
-			podSpec.Containers[0].VolumeMounts = append(podSpec.Containers[0].VolumeMounts, corev1.VolumeMount{
-				Name:      volName,
-				MountPath: dfv1.PathPBQMount,
+		} else if storage.EmptyDir != nil { // Add emptyDir for reduce vertex pods
+			podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
+				Name:         volName,
+				VolumeSource: corev1.VolumeSource{EmptyDir: storage.EmptyDir},
 			})
 		}
+		podSpec.Containers[0].VolumeMounts = append(podSpec.Containers[0].VolumeMounts, corev1.VolumeMount{
+			Name:      volName,
+			MountPath: dfv1.PathPBQMount,
+		})
 	}
 
 	bfs := []string{}

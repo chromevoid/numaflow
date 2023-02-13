@@ -19,20 +19,18 @@ package kafka
 import (
 	"context"
 	"fmt"
-	"github.com/numaproj/numaflow/pkg/udf/applier"
 	"testing"
 
-	"github.com/numaproj/numaflow/pkg/isb/stores/simplebuffer"
-	"github.com/numaproj/numaflow/pkg/watermark/generic"
-
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
+	"github.com/numaproj/numaflow/pkg/forward"
+	"github.com/numaproj/numaflow/pkg/forward/applier"
+	"github.com/numaproj/numaflow/pkg/isb"
+	"github.com/numaproj/numaflow/pkg/isb/stores/simplebuffer"
+	"github.com/numaproj/numaflow/pkg/shared/logging"
+	"github.com/numaproj/numaflow/pkg/watermark/generic"
 
 	mock "github.com/Shopify/sarama/mocks"
 	"github.com/stretchr/testify/assert"
-
-	"github.com/numaproj/numaflow/pkg/isb"
-	"github.com/numaproj/numaflow/pkg/isb/forward"
-	"github.com/numaproj/numaflow/pkg/shared/logging"
 )
 
 func TestWriteSuccessToKafka(t *testing.T) {

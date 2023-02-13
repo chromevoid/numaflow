@@ -22,10 +22,11 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/pointer"
+
+	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 )
 
 var (
@@ -37,8 +38,11 @@ var (
 		Spec: dfv1.PipelineSpec{
 			Vertices: []dfv1.AbstractVertex{
 				{
-					Name:   "input",
-					Source: &dfv1.Source{},
+					Name: "input",
+					Source: &dfv1.Source{
+						UDTransformer: &dfv1.UDTransformer{
+							Builtin: &dfv1.Transformer{Name: "filter"},
+						}},
 				},
 				{
 					Name: "p1",
@@ -87,6 +91,13 @@ var (
 									},
 								},
 							},
+							Storage: &dfv1.PBQStorage{
+								PersistentVolumeClaim: &dfv1.PersistenceStrategy{
+									StorageClassName: nil,
+									AccessMode:       &dfv1.DefaultAccessMode,
+									VolumeSize:       &dfv1.DefaultVolumeSize,
+								},
+							},
 						},
 					},
 				},
@@ -104,6 +115,36 @@ var (
 									},
 								},
 							},
+							Storage: &dfv1.PBQStorage{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+				},
+				{
+					Name: "p3",
+					UDF: &dfv1.UDF{
+						Container: &dfv1.Container{
+							Image: "my-image",
+						},
+						GroupBy: &dfv1.GroupBy{
+							Window: dfv1.Window{
+								Sliding: &dfv1.SlidingWindow{
+									Length: &metav1.Duration{
+										Duration: time.Duration(60 * time.Second),
+									},
+									Slide: &metav1.Duration{
+										Duration: time.Duration(30 * time.Second),
+									},
+								},
+							},
+							Storage: &dfv1.PBQStorage{
+								PersistentVolumeClaim: &dfv1.PersistenceStrategy{
+									StorageClassName: nil,
+									AccessMode:       &dfv1.DefaultAccessMode,
+									VolumeSize:       &dfv1.DefaultVolumeSize,
+								},
+							},
 						},
 					},
 				},
@@ -115,7 +156,8 @@ var (
 			Edges: []dfv1.Edge{
 				{From: "input", To: "p1"},
 				{From: "p1", To: "p2"},
-				{From: "p2", To: "output"},
+				{From: "p2", To: "p3"},
+				{From: "p3", To: "output"},
 			},
 		},
 	}
@@ -128,8 +170,24 @@ func TestValidatePipeline(t *testing.T) {
 	})
 
 	t.Run("test nil pipeline", func(t *testing.T) {
+		testObj := testPipeline.DeepCopy()
+		testObj.Name = "invalid.name"
+		err := ValidatePipeline(testObj)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid pipeline name")
+	})
+
+	t.Run("test invalid pipeline name", func(t *testing.T) {
 		err := ValidatePipeline(nil)
 		assert.Error(t, err)
+	})
+
+	t.Run("test pipeline name too long", func(t *testing.T) {
+		testObj := testPipeline.DeepCopy()
+		testObj.Name = "very-very-very-loooooooooooooooooooooooooooooooooooog"
+		err := ValidatePipeline(testObj)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "over the max limit")
 	})
 
 	t.Run("parallelism on non-reduce vertex", func(t *testing.T) {
@@ -156,7 +214,7 @@ func TestValidatePipeline(t *testing.T) {
 		assert.Contains(t, err.Error(), "duplicate vertex name")
 	})
 
-	t.Run("source and sink spedified", func(t *testing.T) {
+	t.Run("source and sink specified", func(t *testing.T) {
 		testObj := testPipeline.DeepCopy()
 		testObj.Spec.Vertices[0].Sink = &dfv1.Sink{}
 		err := ValidatePipeline(testObj)
@@ -164,7 +222,23 @@ func TestValidatePipeline(t *testing.T) {
 		assert.Contains(t, err.Error(), "only one of")
 	})
 
-	t.Run("udf no image and builtin spedified", func(t *testing.T) {
+	t.Run("transformer no image and builtin specified", func(t *testing.T) {
+		testObj := testPipeline.DeepCopy()
+		testObj.Spec.Vertices[0].Source.UDTransformer.Builtin = nil
+		err := ValidatePipeline(testObj)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "either specify a builtin transformer, or a customized image")
+	})
+
+	t.Run("transformer both image and builtin specified", func(t *testing.T) {
+		testObj := testPipeline.DeepCopy()
+		testObj.Spec.Vertices[0].Source.UDTransformer.Container = &dfv1.Container{Image: "xxxx"}
+		err := ValidatePipeline(testObj)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "can not specify both builtin transformer, and a customized image")
+	})
+
+	t.Run("udf no image and builtin specified", func(t *testing.T) {
 		testObj := testPipeline.DeepCopy()
 		testObj.Spec.Vertices[1].UDF.Builtin = nil
 		err := ValidatePipeline(testObj)
@@ -172,7 +246,7 @@ func TestValidatePipeline(t *testing.T) {
 		assert.Contains(t, err.Error(), "either specify a builtin function, or a customized image")
 	})
 
-	t.Run("udf both image and builtin spedified", func(t *testing.T) {
+	t.Run("udf both image and builtin specified", func(t *testing.T) {
 		testObj := testPipeline.DeepCopy()
 		testObj.Spec.Vertices[1].UDF.Container = &dfv1.Container{Image: "xxxx"}
 		err := ValidatePipeline(testObj)
@@ -261,12 +335,11 @@ func TestValidatePipeline(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
-	t.Run("bad conditional forwarding", func(t *testing.T) {
+	t.Run("allow conditional forwarding from source vertex", func(t *testing.T) {
 		testObj := testPipeline.DeepCopy()
 		testObj.Spec.Edges[0].Conditions = &dfv1.ForwardConditions{KeyIn: []string{"hello"}}
 		err := ValidatePipeline(testObj)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid edge")
+		assert.NoError(t, err)
 	})
 }
 
@@ -310,14 +383,52 @@ func TestValidateReducePipeline(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), `"keyed" should not be true for a reduce vertex which has data coming from a source vertex`)
 	})
+
+	t.Run("no storage", func(t *testing.T) {
+		testObj := testReducePipeline.DeepCopy()
+		testObj.Spec.Vertices[1].UDF.GroupBy.Storage = nil
+		err := ValidatePipeline(testObj)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), `"storage" is missing`)
+	})
+
+	t.Run("no storage type", func(t *testing.T) {
+		testObj := testReducePipeline.DeepCopy()
+		testObj.Spec.Vertices[1].UDF.GroupBy.Storage = &dfv1.PBQStorage{}
+		err := ValidatePipeline(testObj)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), `type of storage to use is missing`)
+	})
+
+	t.Run("both pvc and emptyDir", func(t *testing.T) {
+		testObj := testReducePipeline.DeepCopy()
+		testObj.Spec.Vertices[1].UDF.GroupBy.Storage = &dfv1.PBQStorage{
+			PersistentVolumeClaim: &dfv1.PersistenceStrategy{},
+			EmptyDir:              &corev1.EmptyDirVolumeSource{},
+		}
+		err := ValidatePipeline(testObj)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), `either emptyDir or persistentVolumeClaim is allowed, not both`)
+	})
+
 }
 
 func TestValidateVertex(t *testing.T) {
+	t.Run("test invalid vertex name", func(t *testing.T) {
+		v := dfv1.AbstractVertex{
+			Name: "invalid.name",
+		}
+		err := validateVertex(v)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid vertex name")
+	})
+
 	goodContainers := []corev1.Container{{Name: "my-test-image", Image: "my-image:latest"}}
 	badContainers := []corev1.Container{{Name: dfv1.CtrInit, Image: "my-image:latest"}}
 
 	t.Run("bad min", func(t *testing.T) {
 		v := dfv1.AbstractVertex{
+			Name: "my-vertex",
 			Scale: dfv1.Scale{
 				Min: pointer.Int32(-1),
 				Max: pointer.Int32(1),
@@ -330,6 +441,7 @@ func TestValidateVertex(t *testing.T) {
 
 	t.Run("min > max", func(t *testing.T) {
 		v := dfv1.AbstractVertex{
+			Name: "my-vertex",
 			Scale: dfv1.Scale{
 				Min: pointer.Int32(2),
 				Max: pointer.Int32(1),
@@ -341,26 +453,26 @@ func TestValidateVertex(t *testing.T) {
 	})
 
 	t.Run("good init container", func(t *testing.T) {
-		v := dfv1.AbstractVertex{InitContainers: goodContainers}
+		v := dfv1.AbstractVertex{Name: "my-vertex", InitContainers: goodContainers}
 		err := validateVertex(v)
 		assert.NoError(t, err)
 	})
 
 	t.Run("bad init container name", func(t *testing.T) {
-		v := dfv1.AbstractVertex{InitContainers: badContainers}
+		v := dfv1.AbstractVertex{Name: "my-vertex", InitContainers: badContainers}
 		err := validateVertex(v)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "is reserved for containers created by numaflow")
 	})
 
 	t.Run("good sidecar container", func(t *testing.T) {
-		v := dfv1.AbstractVertex{Sidecars: goodContainers}
+		v := dfv1.AbstractVertex{Name: "my-vertex", Sidecars: goodContainers}
 		err := validateVertex(v)
 		assert.NoError(t, err)
 	})
 
 	t.Run("bad sidecar container name", func(t *testing.T) {
-		v := dfv1.AbstractVertex{Sidecars: badContainers}
+		v := dfv1.AbstractVertex{Name: "my-vertex", Sidecars: badContainers}
 		err := validateVertex(v)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "is reserved for containers created by numaflow")
@@ -368,6 +480,7 @@ func TestValidateVertex(t *testing.T) {
 
 	t.Run("sidecar on source vertex", func(t *testing.T) {
 		v := dfv1.AbstractVertex{
+			Name: "my-vertex",
 			Source: &dfv1.Source{
 				Generator: &dfv1.GeneratorSource{},
 			},
