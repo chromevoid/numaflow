@@ -1,0 +1,34 @@
+#
+# This manifest is intended for demonstration purpose, it's not suitable for production.
+# Check https://numaflow.numaproj.io/inter-step-buffer-service/ to figure out reliable configuration for production.
+#
+apiVersion: numaflow.numaproj.io/v1alpha1
+kind: InterStepBufferService
+metadata:
+  name: default
+spec:
+  jetstream:
+    version: latest # Do NOT use "latest" in real deployment, check "numaflow-controller-config" ConfigMap to get available versions.
+    containerTemplate:
+      resources:
+        limits:
+          memory: 10240Mi
+        requests:
+          cpu: 4
+          memory: 8192Mi
+    settings: |
+      max_memory_store: 8G
+    bufferConfig: |
+      stream:
+        # 0: Limits, 1: Interest, 2: WorkQueue
+        retention: 0
+        # 2MB
+        maxMsgs: 2000000
+        maxAge: 168h
+        maxBytes: -1
+        # 0: File, 1: Memory
+        storage: 1
+      otBucket:
+        storage: 1
+      procBucket:
+        storage: 1
