@@ -1,0 +1,51 @@
+apiVersion: numaflow.numaproj.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: simple-pipeline
+spec:
+  vertices:
+    - name: in
+      scale:
+        min: 6
+      containerTemplate:
+#        env:
+#          - name: NUMAFLOW_DEBUG
+#            value: "true"
+        resources:
+          limits:
+            cpu: 3000m
+            memory: 6Gi
+          requests:
+            cpu: 1000m
+            memory: 4Gi
+      source:
+        # A self data generating source
+        generator:
+          rpu: 5000
+          duration: 1s
+          msgSize: 256
+#    - name: cat
+#      scale:
+#        min: 8
+#      containerTemplate:
+#        resources:
+#          limits:
+#            cpu: 3000m
+#            memory: 6Gi
+#          requests:
+#            cpu: 1000m
+#            memory: 4Gi
+#      udf:
+#        builtin:
+#          name: cat # A built-in UDF which simply cats the message
+    - name: out
+      scale:
+        min: 8
+      sink:
+        # A simple log printing sink
+        blackhole: {}
+  edges:
+    - from: in
+      to: out
+#    - from: cat
+#      to: out
