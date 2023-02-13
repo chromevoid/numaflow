@@ -51,6 +51,8 @@ spec:
         log: {}
   edges:
     - from: in
+      to: cat
+    - from: cat
       to: reduce
       parallelism: 3
     - from: reduce
