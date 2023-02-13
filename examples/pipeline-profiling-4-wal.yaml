@@ -21,7 +21,7 @@ spec:
         generator:
           rpu: 100
           duration: 1s
-          msgSize: 256
+#          msgSize: 256
     - name: fixed
       udf:
         container:
