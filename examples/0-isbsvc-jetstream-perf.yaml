@@ -1,0 +1,22 @@
+
+apiVersion: numaflow.numaproj.io/v1alpha1
+kind: InterStepBufferService
+metadata:
+  name: default
+spec:
+  jetstream:
+    version: latest
+    replicas: 3
+    persistence:
+      accessMode: ReadWriteOnce
+      volumeSize: 50Gi
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: isbsvc
+                  numaflow.numaproj.io/isbsvc-name: default
+              topologyKey: failure-domain.beta.kubernetes.io/zone
+            weight: 100
