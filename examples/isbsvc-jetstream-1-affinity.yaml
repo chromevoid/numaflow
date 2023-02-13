@@ -1,4 +1,3 @@
-
 apiVersion: numaflow.numaproj.io/v1alpha1
 kind: InterStepBufferService
 metadata:
@@ -7,6 +6,13 @@ spec:
   jetstream:
     version: latest
     replicas: 3
+#    containerTemplate:
+#      resources:
+#        limits:
+#          memory: 10Gi
+#        requests:
+#          cpu: 1
+#          memory: 8Gi
     persistence:
       accessMode: ReadWriteOnce
       volumeSize: 50Gi
@@ -20,3 +26,7 @@ spec:
                   numaflow.numaproj.io/isbsvc-name: default
               topologyKey: failure-domain.beta.kubernetes.io/zone
             weight: 100
+#    bufferConfig: |
+#      stream:
+#        retention: 0
+#        maxMsgs: 100000
