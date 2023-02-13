@@ -1,28 +1,32 @@
 apiVersion: numaflow.numaproj.io/v1alpha1
 kind: Pipeline
 metadata:
-  name: reduce-sliding-pipeline
+  name: wal-pipeline
 spec:
   vertices:
     - name: in
-      scale:
-        min: 1
-        max: 1
-      containerTemplate:
-        resources:
-          limits:
-            cpu: 2000m
-            memory: 2Gi
-          requests:
-            cpu: 1000m
-            memory: 1Gi
+#      scale:
+#        min: 1
+#        max: 1
+#      containerTemplate:
+#        resources:
+#          limits:
+#            cpu: 2000m
+#            memory: 2Gi
+#          requests:
+#            cpu: 1000m
+#            memory: 1Gi
       source:
         # A self data generating source
         generator:
           rpu: 100
           duration: 1s
 #          msgSize: 256
-    - name: fixed
+    - name: cat
+      udf:
+        builtin:
+          name: cat # A built-in UDF which simply cats the message
+    - name: reduce
       udf:
         container:
           image: quay.io/numaio/numaflow-go/reduce-counter
@@ -47,7 +51,7 @@ spec:
         log: {}
   edges:
     - from: in
-      to: fixed
+      to: reduce
       parallelism: 3
-    - from: fixed
+    - from: reduce
       to: sink
