@@ -111,16 +111,15 @@ func (u *SinkProcessor) Start(ctx context.Context) error {
 			return
 		}
 	}()
-
-	metricsOpts := []metrics.Option{metrics.WithLookbackSeconds(int64(u.VertexInstance.Vertex.Spec.Scale.GetLookbackSeconds()))}
-	if x, ok := reader.(isb.LagReader); ok {
-		metricsOpts = append(metricsOpts, metrics.WithLagReader(x))
-	}
-	if x, ok := reader.(isb.Ratable); ok {
-		metricsOpts = append(metricsOpts, metrics.WithRater(x))
-	}
-	if x, ok := sinker.(*udsink.UserDefinedSink); ok {
-		metricsOpts = append(metricsOpts, metrics.WithHealthCheckExecutor(x.IsHealthy))
+	var metricsOpts []metrics.Option
+	if udSink := u.VertexInstance.Vertex.Spec.Sink.UDSink; udSink != nil {
+		if serverHandler, ok := sinker.(*udsink.UserDefinedSink); ok {
+			metricsOpts = metrics.NewMetricsOptions(ctx, u.VertexInstance.Vertex, serverHandler, reader, nil)
+		} else {
+			return fmt.Errorf("unable to get the metrics options for the udsink")
+		}
+	} else {
+		metricsOpts = metrics.NewMetricsOptions(ctx, u.VertexInstance.Vertex, nil, reader, nil)
 	}
 	ms := metrics.NewMetricsServer(u.VertexInstance.Vertex, metricsOpts...)
 	if shutdown, err := ms.Start(ctx); err != nil {

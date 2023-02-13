@@ -24,23 +24,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	functionpb "github.com/numaproj/numaflow-go/pkg/apis/proto/function/v1"
 	"github.com/numaproj/numaflow-go/pkg/apis/proto/function/v1/funcmock"
 	"github.com/numaproj/numaflow-go/pkg/function/clienttest"
-	"github.com/stretchr/testify/assert"
-	"google.golang.org/grpc"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/isb/testutils"
 	"github.com/numaproj/numaflow/pkg/reduce/pbq/partition"
+
+	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/assert"
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func NewMockUDSGRPCBasedUDF(mockClient *funcmock.MockUserDefinedFunctionClient) *udsGRPCBasedUDF {
+func NewMockUDSGRPCBasedUDF(mockClient *funcmock.MockUserDefinedFunctionClient) *UDSgRPCBasedUDF {
 	c, _ := clienttest.New(mockClient)
-	return &udsGRPCBasedUDF{c}
+	return &UDSgRPCBasedUDF{c}
 }
 
 func TestGRPCBasedUDF_WaitUntilReadyWithMockClient(t *testing.T) {
@@ -305,7 +306,7 @@ func TestGRPCBasedUDF_BasicReduceWithMockClient(t *testing.T) {
 		partitionID := &partition.ID{
 			Start: time.Unix(60, 0),
 			End:   time.Unix(120, 0),
-			Key:   "test",
+			Slot:  "test",
 		}
 
 		got, err := u.ApplyReduce(ctx, partitionID, messageCh)
@@ -356,7 +357,7 @@ func TestGRPCBasedUDF_BasicReduceWithMockClient(t *testing.T) {
 		partitionID := &partition.ID{
 			Start: time.Unix(60, 0),
 			End:   time.Unix(120, 0),
-			Key:   "test",
+			Slot:  "test",
 		}
 
 		_, err := u.ApplyReduce(ctx, partitionID, messageCh)
@@ -399,7 +400,7 @@ func TestGRPCBasedUDF_BasicReduceWithMockClient(t *testing.T) {
 		partitionID := &partition.ID{
 			Start: time.Unix(60, 0),
 			End:   time.Unix(120, 0),
-			Key:   "test",
+			Slot:  "test",
 		}
 		_, err := u.ApplyReduce(ctx, partitionID, messageCh)
 
@@ -468,7 +469,7 @@ func TestHGRPCBasedUDF_Reduce(t *testing.T) {
 	partitionID := &partition.ID{
 		Start: time.Unix(60, 0),
 		End:   time.Unix(120, 0),
-		Key:   "test",
+		Slot:  "test",
 	}
 
 	result, err := u.ApplyReduce(ctx, partitionID, messageCh)

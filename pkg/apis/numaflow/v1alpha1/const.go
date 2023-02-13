@@ -62,10 +62,11 @@ const (
 	JetStreamConfigMapKey                = "nats-js"              // key for nats-js.conf in the configmap
 
 	// container names.
-	CtrInit   = "init"
-	CtrMain   = "numa"
-	CtrUdf    = "udf"
-	CtrUdsink = "udsink"
+	CtrInit          = "init"
+	CtrMain          = "numa"
+	CtrUdf           = "udf"
+	CtrUdsink        = "udsink"
+	CtrUdtransformer = "transformer"
 
 	// components
 	ComponentISBSvc = "isbsvc"
@@ -102,6 +103,9 @@ const (
 	EnvISBSvcJetStreamTLSEnabled      = "NUMAFLOW_ISBSVC_JETSTREAM_TLS_ENABLED"
 	EnvISBSvcConfig                   = "NUMAFLOW_ISBSVC_CONFIG"
 	EnvDebug                          = "NUMAFLOW_DEBUG"
+	EnvPPROF                          = "NUMAFLOW_PPROF"
+	EnvHealthCheckDisabled            = "NUMAFLOW_HEALTH_CHECK_DISABLED"
+	EnvGRPCMaxMessageSize             = "NUMAFLOW_GRPC_MAX_MESSAGE_SIZE"
 
 	PathVarRun            = "/var/run/numaflow"
 	VertexMetricsPort     = 2469
@@ -127,7 +131,7 @@ const (
 	DefaultReplicasPerScale        = 2   // Default maximum replicas to be scaled up or down at once
 
 	// Default persistent buffer queue options
-	DefaultPBQChannelBufferSize = 10000           // Default channel size in int
+	DefaultPBQChannelBufferSize = 100             // Default channel size in int (what should be right value?)
 	DefaultPBQReadTimeout       = 1 * time.Second // Default read timeout for pbq
 	DefaultPBQReadBatchSize     = 100             // Default read batch size for pbq
 
@@ -141,6 +145,9 @@ const (
 
 	// DefaultKeyForNonKeyedData Default key for non keyed stream
 	DefaultKeyForNonKeyedData = "NON_KEYED_STREAM"
+
+	// Default gRPC max message size
+	DefaultGRPCMaxMessageSize = 20 * 1024 * 1024
 )
 
 var (

@@ -23,48 +23,48 @@ import (
 	"sync"
 	"time"
 
-	"github.com/numaproj/numaflow/pkg/reduce/pbq/partition"
-	"github.com/numaproj/numaflow/pkg/udf/applier"
-
 	functionpb "github.com/numaproj/numaflow-go/pkg/apis/proto/function/v1"
 	functionsdk "github.com/numaproj/numaflow-go/pkg/function"
-	"github.com/numaproj/numaflow-go/pkg/function/client"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	map_applier "github.com/numaproj/numaflow/pkg/forward/applier"
 	"github.com/numaproj/numaflow/pkg/isb"
+	reduce_applier "github.com/numaproj/numaflow/pkg/reduce/applier"
+	"github.com/numaproj/numaflow/pkg/reduce/pbq/partition"
 )
 
-// udsGRPCBasedUDF applies user defined function over gRPC (over Unix Domain Socket) client/server where server is the UDF.
-type udsGRPCBasedUDF struct {
+// UDSgRPCBasedUDF applies user defined function over gRPC (over Unix Domain Socket) client/server where server is the UDF.
+type UDSgRPCBasedUDF struct {
 	client functionsdk.Client
 }
 
-var _ applier.MapApplier = (*udsGRPCBasedUDF)(nil)
-var _ applier.ReduceApplier = (*udsGRPCBasedUDF)(nil)
+var _ map_applier.MapApplier = (*UDSgRPCBasedUDF)(nil)
+var _ reduce_applier.ReduceApplier = (*UDSgRPCBasedUDF)(nil)
 
-// NewUDSGRPCBasedUDF returns a new udsGRPCBasedUDF object.
-func NewUDSGRPCBasedUDF() (*udsGRPCBasedUDF, error) {
-	c, err := client.New() // Can we pass this as a parameter to the function?
-	if err != nil {
-		return nil, fmt.Errorf("failed to create a new gRPC client: %w", err)
-	}
-	return &udsGRPCBasedUDF{c}, nil
+// NewUDSgRPCBasedUDF returns a new UDSgRPCBasedUDF object.
+func NewUDSgRPCBasedUDF(c functionsdk.Client) (*UDSgRPCBasedUDF, error) {
+	return &UDSgRPCBasedUDF{c}, nil
 }
 
-// NewUdsGRPCBasedUDFWithClient need this for testing
-func NewUdsGRPCBasedUDFWithClient(client functionsdk.Client) *udsGRPCBasedUDF {
-	return &udsGRPCBasedUDF{client: client}
+// NewUDSgRPCBasedUDFWithClient need this for testing
+func NewUDSgRPCBasedUDFWithClient(client functionsdk.Client) *UDSgRPCBasedUDF {
+	return &UDSgRPCBasedUDF{client: client}
 }
 
 // CloseConn closes the gRPC client connection.
-func (u *udsGRPCBasedUDF) CloseConn(ctx context.Context) error {
+func (u *UDSgRPCBasedUDF) CloseConn(ctx context.Context) error {
 	return u.client.CloseConn(ctx)
 }
 
-// WaitUntilReady waits until the client is connected.
-func (u *udsGRPCBasedUDF) WaitUntilReady(ctx context.Context) error {
+// IsHealthy checks if the udf is healthy.
+func (u *UDSgRPCBasedUDF) IsHealthy(ctx context.Context) error {
+	return u.WaitUntilReady(ctx)
+}
+
+// WaitUntilReady waits until the udf is connected.
+func (u *UDSgRPCBasedUDF) WaitUntilReady(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -78,7 +78,7 @@ func (u *udsGRPCBasedUDF) WaitUntilReady(ctx context.Context) error {
 	}
 }
 
-func (u *udsGRPCBasedUDF) ApplyMap(ctx context.Context, readMessage *isb.ReadMessage) ([]*isb.Message, error) {
+func (u *UDSgRPCBasedUDF) ApplyMap(ctx context.Context, readMessage *isb.ReadMessage) ([]*isb.Message, error) {
 	key := readMessage.Key
 	payload := readMessage.Body.Payload
 	offset := readMessage.ReadOffset
@@ -124,7 +124,7 @@ func (u *udsGRPCBasedUDF) ApplyMap(ctx context.Context, readMessage *isb.ReadMes
 // should we pass metadata information ?
 
 // ApplyReduce accepts a channel of isbMessages and returns the aggregated result
-func (u *udsGRPCBasedUDF) ApplyReduce(ctx context.Context, partitionID *partition.ID, messageStream <-chan *isb.ReadMessage) ([]*isb.Message, error) {
+func (u *UDSgRPCBasedUDF) ApplyReduce(ctx context.Context, partitionID *partition.ID, messageStream <-chan *isb.ReadMessage) ([]*isb.Message, error) {
 	datumCh := make(chan *functionpb.Datum)
 	var wg sync.WaitGroup
 	var result []*functionpb.Datum
@@ -132,7 +132,7 @@ func (u *udsGRPCBasedUDF) ApplyReduce(ctx context.Context, partitionID *partitio
 
 	// pass key and window information inside the context
 	mdMap := map[string]string{
-		functionsdk.DatumKey:     partitionID.Key,
+		functionsdk.DatumKey:     partitionID.Slot,
 		functionsdk.WinStartTime: strconv.FormatInt(partitionID.Start.UnixMilli(), 10),
 		functionsdk.WinEndTime:   strconv.FormatInt(partitionID.End.UnixMilli(), 10),
 	}

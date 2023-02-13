@@ -23,11 +23,6 @@ import (
 	"strings"
 	"time"
 
-	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
-	"github.com/numaproj/numaflow/pkg/reconciler"
-	"github.com/numaproj/numaflow/pkg/reconciler/vertex/scaling"
-	"github.com/numaproj/numaflow/pkg/shared/logging"
-	sharedutil "github.com/numaproj/numaflow/pkg/shared/util"
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -39,6 +34,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
+	"github.com/numaproj/numaflow/pkg/reconciler"
+	"github.com/numaproj/numaflow/pkg/reconciler/vertex/scaling"
+	"github.com/numaproj/numaflow/pkg/shared/logging"
+	sharedutil "github.com/numaproj/numaflow/pkg/shared/util"
 )
 
 // vertexReconciler reconciles a vertex object.
@@ -218,6 +219,9 @@ func (r *vertexReconciler) reconcile(ctx context.Context, vertex *dfv1.Vertex) (
 				annotations[dfv1.KeyDefaultContainer] = dfv1.CtrUdf
 			} else if vertex.IsUDSink() {
 				annotations[dfv1.KeyDefaultContainer] = dfv1.CtrUdsink
+			} else if vertex.HasUDTransformer() {
+				// Once we have UDSource in place, replace it with UDSource?
+				annotations[dfv1.KeyDefaultContainer] = dfv1.CtrUdtransformer
 			}
 			pod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{

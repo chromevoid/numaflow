@@ -21,15 +21,16 @@ import (
 	"fmt"
 	"time"
 
-	sinkpb "github.com/numaproj/numaflow-go/pkg/apis/proto/sink/v1"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	sinkpb "github.com/numaproj/numaflow-go/pkg/apis/proto/sink/v1"
+
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 	"github.com/numaproj/numaflow/pkg/forward"
+	"github.com/numaproj/numaflow/pkg/forward/applier"
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
-	"github.com/numaproj/numaflow/pkg/udf/applier"
 	"github.com/numaproj/numaflow/pkg/watermark/fetch"
 	"github.com/numaproj/numaflow/pkg/watermark/publish"
 )
@@ -39,7 +40,7 @@ type UserDefinedSink struct {
 	pipelineName string
 	isdf         *forward.InterStepDataForward
 	logger       *zap.SugaredLogger
-	udsink       *udsGRPCBasedUDSink
+	udsink       *UDSgRPCBasedUDSink
 }
 
 type Option func(*UserDefinedSink) error
@@ -72,7 +73,7 @@ func NewUserDefinedSink(vertex *dfv1.Vertex, fromBuffer isb.BufferReader, fetchW
 			forwardOpts = append(forwardOpts, forward.WithReadBatchSize(int64(*x.ReadBatchSize)))
 		}
 	}
-	udsink, err := NewUDSGRPCBasedUDSink()
+	udsink, err := NewUDSgRPCBasedUDSink()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gRPC client, %w", err)
 	}
@@ -135,8 +136,6 @@ func (s *UserDefinedSink) ForceStop() {
 }
 
 // IsHealthy checks if the udsink sidecar is healthy.
-func (s *UserDefinedSink) IsHealthy() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+func (s *UserDefinedSink) IsHealthy(ctx context.Context) error {
 	return s.udsink.WaitUntilReady(ctx)
 }

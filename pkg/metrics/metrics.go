@@ -23,9 +23,9 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
-	"runtime"
 	"time"
 
+	"github.com/numaproj/numaflow/pkg/shared/util"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -122,6 +122,35 @@ func WithHealthCheckExecutor(f func() error) Option {
 	return func(m *metricsServer) {
 		m.healthCheckExecutors = append(m.healthCheckExecutors, f)
 	}
+}
+
+// NewMetricsOptions returns a metrics option list.
+func NewMetricsOptions(ctx context.Context, vertex *dfv1.Vertex, serverHandler HealthChecker, reader isb.BufferReader, writer isb.BufferWriter) []Option {
+	metricsOpts := []Option{
+		WithLookbackSeconds(int64(vertex.Spec.Scale.GetLookbackSeconds())),
+	}
+	if serverHandler != nil {
+		if util.LookupEnvStringOr(dfv1.EnvHealthCheckDisabled, "false") != "true" {
+			metricsOpts = append(metricsOpts, WithHealthCheckExecutor(func() error {
+				cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+				defer cancel()
+				return serverHandler.IsHealthy(cctx)
+			}))
+		}
+	}
+	if x, ok := reader.(isb.LagReader); ok {
+		metricsOpts = append(metricsOpts, WithLagReader(x))
+	}
+	if vertex.IsASource() {
+		if x, ok := writer.(isb.Ratable); ok {
+			metricsOpts = append(metricsOpts, WithRater(x))
+		}
+	} else {
+		if x, ok := reader.(isb.Ratable); ok {
+			metricsOpts = append(metricsOpts, WithRater(x))
+		}
+	}
+	return metricsOpts
 }
 
 // NewMetricsServer returns a Prometheus metrics server instance, which can be used to start an HTTPS service to expose Prometheus metrics.
@@ -253,10 +282,8 @@ func (ms *metricsServer) Start(ctx context.Context) (func(ctx context.Context) e
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	debugEnabled := os.Getenv(dfv1.EnvDebug)
-	if debugEnabled == "true" {
-		runtime.SetBlockProfileRate(1)     // enable block
-		runtime.SetMutexProfileFraction(1) // enable mutex
+	pprofEnabled := os.Getenv(dfv1.EnvDebug) == "true" || os.Getenv(dfv1.EnvPPROF) == "true"
+	if pprofEnabled {
 		mux.HandleFunc("/debug/pprof/", pprof.Index)
 		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)

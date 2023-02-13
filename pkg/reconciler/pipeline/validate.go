@@ -41,6 +41,7 @@ func ValidatePipeline(pl *dfv1.Pipeline) error {
 	}
 	names := make(map[string]bool)
 	sources := make(map[string]dfv1.AbstractVertex)
+	udTransformers := make(map[string]dfv1.AbstractVertex)
 	sinks := make(map[string]dfv1.AbstractVertex)
 	mapUdfs := make(map[string]dfv1.AbstractVertex)
 	reduceUdfs := make(map[string]dfv1.AbstractVertex)
@@ -58,6 +59,9 @@ func ValidatePipeline(pl *dfv1.Pipeline) error {
 				return fmt.Errorf("invalid vertex %q, only one of 'source', 'sink' and 'udf' can be specified", v.Name)
 			}
 			sources[v.Name] = v
+			if v.Source.UDTransformer != nil {
+				udTransformers[v.Name] = v
+			}
 		}
 		if v.Sink != nil {
 			if v.Source != nil || v.UDF != nil {
@@ -83,6 +87,20 @@ func ValidatePipeline(pl *dfv1.Pipeline) error {
 
 	if len(sinks) == 0 {
 		return fmt.Errorf("pipeline has no sink, at least one vertex with 'sink' defined is required")
+	}
+
+	for k, t := range udTransformers {
+		transformer := t.Source.UDTransformer
+		if transformer.Container != nil {
+			if transformer.Container.Image == "" && transformer.Builtin == nil {
+				return fmt.Errorf("invalid source vertex %q, either specify a builtin transformer, or a customized image", k)
+			}
+			if transformer.Container.Image != "" && transformer.Builtin != nil {
+				return fmt.Errorf("invalid source vertex %q, can not specify both builtin transformer, and a customized image", k)
+			}
+		} else if transformer.Builtin == nil {
+			return fmt.Errorf("invalid source vertex %q, either specify a builtin transformer, or a customized image", k)
+		}
 	}
 
 	for k, u := range mapUdfs {
@@ -129,11 +147,6 @@ func ValidatePipeline(pl *dfv1.Pipeline) error {
 		}
 		if _, existing := sinks[e.From]; existing {
 			return fmt.Errorf("sink vertex %q can not be define as 'from'", e.To)
-		}
-		if e.Conditions != nil && len(e.Conditions.KeyIn) > 0 {
-			if _, ok := sources[e.From]; ok { // Source vertex should not do conditional forwarding
-				return fmt.Errorf(`invalid edge, "conditions.keysIn" not allowed for %q`, e.From)
-			}
 		}
 		if e.Parallelism != nil {
 			if _, ok := reduceUdfs[e.To]; !ok {
@@ -255,5 +268,6 @@ func isReservedContainerName(name string) bool {
 	return name == dfv1.CtrInit ||
 		name == dfv1.CtrMain ||
 		name == dfv1.CtrUdf ||
-		name == dfv1.CtrUdsink
+		name == dfv1.CtrUdsink ||
+		name == dfv1.CtrUdtransformer
 }

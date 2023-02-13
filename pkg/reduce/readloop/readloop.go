@@ -38,13 +38,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/numaproj/numaflow/pkg/forward"
+	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/metrics"
+	"github.com/numaproj/numaflow/pkg/reduce/applier"
 	"github.com/numaproj/numaflow/pkg/reduce/pbq"
 	"github.com/numaproj/numaflow/pkg/reduce/pbq/partition"
-
-	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
-	"github.com/numaproj/numaflow/pkg/udf/applier"
 	"github.com/numaproj/numaflow/pkg/watermark/processor"
 	"github.com/numaproj/numaflow/pkg/watermark/publish"
 	"github.com/numaproj/numaflow/pkg/window"
@@ -124,7 +123,7 @@ func (rl *ReadLoop) Startup(ctx context.Context) error {
 
 		// add key to the window, so that when a new message with the watermark greater than
 		// the window end time comes, key will not be lost and the windows will be closed as expected
-		keyedWindow.AddKey(p.Key)
+		keyedWindow.AddSlot(p.Slot)
 
 		// create and invoke process and forward for the partition
 		rl.associatePBQAndPnF(ctx, p)
@@ -144,21 +143,26 @@ func (rl *ReadLoop) Process(ctx context.Context, messages []*isb.ReadMessage) {
 		rl.log.Errorw("Failed to write messages", zap.Int("totalMessages", len(messages)), zap.Int("writtenMessage", len(successfullyWrittenMessages)))
 	}
 
+	if len(successfullyWrittenMessages) == 0 {
+		return
+	}
+
 	// ack successful messages
 	rl.ackMessages(ctx, successfullyWrittenMessages)
+	// close any windows that need to be closed.
+	// since the watermark will be same for all the messages in the batch
+	// we can invoke remove windows only once per batch
+	var closedWindows []window.AlignedKeyedWindower
+	wm := processor.Watermark(successfullyWrittenMessages[0].Watermark)
 
-	// for each successfully written message,
-	for _, m := range successfullyWrittenMessages {
-		// close any windows that need to be closed.
-		wm := processor.Watermark(m.Watermark)
-		closedWindows := rl.windower.RemoveWindows(time.Time(wm))
-		rl.log.Debugw("Windows eligible for closing", zap.Int("length", len(closedWindows)), zap.Time("watermark", time.Time(wm)))
+	closedWindows = rl.windower.RemoveWindows(time.Time(wm))
 
-		for _, cw := range closedWindows {
-			partitions := cw.Partitions()
-			rl.closePartitions(partitions)
-			rl.log.Debugw("Closing Window", zap.Int64("windowStart", cw.StartTime().UnixMilli()), zap.Int64("windowEnd", cw.EndTime().UnixMilli()))
-		}
+	rl.log.Debugw("Windows eligible for closing", zap.Int("length", len(closedWindows)), zap.Time("watermark", time.Time(wm)))
+
+	for _, cw := range closedWindows {
+		partitions := cw.Partitions()
+		rl.closePartitions(partitions)
+		rl.log.Debugw("Closing Window", zap.Int64("windowStart", cw.StartTime().UnixMilli()), zap.Int64("windowEnd", cw.EndTime().UnixMilli()))
 	}
 }
 
@@ -169,6 +173,17 @@ func (rl *ReadLoop) writeMessagesToWindows(ctx context.Context, messages []*isb.
 
 messagesLoop:
 	for _, message := range messages {
+		// drop the late messages
+		if message.IsLate {
+			rl.log.Warnw("Dropping the late message", zap.Time("eventTime", message.EventTime), zap.Time("watermark", message.Watermark))
+			droppedMessagesCount.With(map[string]string{
+				metrics.LabelVertex:             rl.vertexName,
+				metrics.LabelPipeline:           rl.pipelineName,
+				metrics.LabelVertexReplicaIndex: strconv.Itoa(int(rl.vertexReplica)),
+				LabelReason:                     "late"}).Inc()
+			continue
+		}
+
 		// NOTE(potential bug): if we get a message where the event time is < watermark, skip processing the message.
 		// This could be due to a couple of problem, eg. ack was not registered, etc.
 		// Please do not confuse this with late data! This is a platform related problem causing the watermark inequality
@@ -197,7 +212,7 @@ messagesLoop:
 			partitionID := partition.ID{
 				Start: kw.StartTime(),
 				End:   kw.EndTime(),
-				Key:   message.Key,
+				Slot:  "slot-0", // FIXME: revisit this later. for now hard coded to slot-0
 			}
 
 			err := rl.writeToPBQ(ctx, partitionID, message)
@@ -368,28 +383,19 @@ func (rl *ReadLoop) ShutDown(ctx context.Context) {
 // upsertWindowsAndKeys will create or assigns (if already present) a window to the message. It is an upsert operation
 // because windows are created out of order, but they will be closed in-order.
 func (rl *ReadLoop) upsertWindowsAndKeys(m *isb.ReadMessage) []window.AlignedKeyedWindower {
-	// drop the late messages
-	if m.IsLate {
-		rl.log.Warnw("Dropping the late message", zap.Time("eventTime", m.EventTime), zap.Time("watermark", m.Watermark))
-		droppedMessagesCount.With(map[string]string{
-			metrics.LabelVertex:             rl.vertexName,
-			metrics.LabelPipeline:           rl.pipelineName,
-			metrics.LabelVertexReplicaIndex: strconv.Itoa(int(rl.vertexReplica)),
-			LabelReason:                     "late"}).Inc()
-		return []window.AlignedKeyedWindower{}
-	}
 
 	processingWindows := rl.windower.AssignWindow(m.EventTime)
 	var kWindows []window.AlignedKeyedWindower
 	for _, win := range processingWindows {
 		w, isPresent := rl.windower.InsertIfNotPresent(win)
 		if !isPresent {
-			rl.log.Debugw("Creating new keyed window", zap.Any("key", w.Keys()), zap.String("msg.offset", m.ID), zap.Int64("startTime", w.StartTime().UnixMilli()), zap.Int64("endTime", w.EndTime().UnixMilli()))
+			rl.log.Debugw("Creating new keyed window", zap.String("msg.offset", m.ID), zap.Int64("startTime", w.StartTime().UnixMilli()), zap.Int64("endTime", w.EndTime().UnixMilli()))
 		} else {
-			rl.log.Debugw("Found an existing window", zap.Any("key", w.Keys()), zap.String("msg.offset", m.ID), zap.Int64("startTime", w.StartTime().UnixMilli()), zap.Int64("endTime", w.EndTime().UnixMilli()))
+			rl.log.Debugw("Found an existing window", zap.String("msg.offset", m.ID), zap.Int64("startTime", w.StartTime().UnixMilli()), zap.Int64("endTime", w.EndTime().UnixMilli()))
 		}
 		// track the key to window relationship
-		w.AddKey(m.Key)
+		// FIXME: create a slot from m.key
+		w.AddSlot("slot-0")
 		kWindows = append(kWindows, w)
 	}
 	return kWindows

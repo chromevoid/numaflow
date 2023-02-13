@@ -20,8 +20,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
+	"github.com/numaproj/numaflow-go/pkg/function/client"
 	"go.uber.org/zap"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
@@ -101,7 +101,13 @@ func (u *MapUDFProcessor) Start(ctx context.Context) error {
 	})
 
 	log = log.With("protocol", "uds-grpc-map-udf")
-	udfHandler, err := function.NewUDSGRPCBasedUDF()
+	maxMessageSize := sharedutil.LookupEnvIntOr(dfv1.EnvGRPCMaxMessageSize, dfv1.DefaultGRPCMaxMessageSize)
+	c, err := client.New(client.WithMaxMessageSize(maxMessageSize))
+	if err != nil {
+		return fmt.Errorf("failed to create a new gRPC client: %w", err)
+	}
+
+	udfHandler, err := function.NewUDSgRPCBasedUDF(c)
 	if err != nil {
 		return fmt.Errorf("failed to create gRPC client, %w", err)
 	}
@@ -142,20 +148,7 @@ func (u *MapUDFProcessor) Start(ctx context.Context) error {
 		}
 	}()
 
-	metricsOpts := []metrics.Option{
-		metrics.WithLookbackSeconds(int64(u.VertexInstance.Vertex.Spec.Scale.GetLookbackSeconds())),
-		metrics.WithHealthCheckExecutor(func() error {
-			cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-			defer cancel()
-			return udfHandler.WaitUntilReady(cctx)
-		}),
-	}
-	if x, ok := reader.(isb.LagReader); ok {
-		metricsOpts = append(metricsOpts, metrics.WithLagReader(x))
-	}
-	if x, ok := reader.(isb.Ratable); ok {
-		metricsOpts = append(metricsOpts, metrics.WithRater(x))
-	}
+	metricsOpts := metrics.NewMetricsOptions(ctx, u.VertexInstance.Vertex, udfHandler, reader, nil)
 	ms := metrics.NewMetricsServer(u.VertexInstance.Vertex, metricsOpts...)
 	if shutdown, err := ms.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start metrics server, error: %w", err)

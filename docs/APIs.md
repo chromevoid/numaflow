@@ -173,6 +173,34 @@ ServiceAccountName applied to the pod
 </p>
 </td>
 </tr>
+<tr>
+<td>
+<code>runtimeClassName</code></br> <em> string </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+RuntimeClassName refers to a RuntimeClass object in the node.k8s.io
+group, which should be used to run this pod. If no RuntimeClass resource
+matches the named class, the pod will not be run. If unset or empty, the
+“legacy” RuntimeClass will be used, which is an implicit class with an
+empty definition that uses the default runtime handler. More info:
+<a href="https://git.k8s.io/enhancements/keps/sig-node/585-runtime-class">https://git.k8s.io/enhancements/keps/sig-node/585-runtime-class</a>
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>automountServiceAccountToken</code></br> <em> bool </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+AutomountServiceAccountToken indicates whether a service account token
+should be automatically mounted.
+</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="numaflow.numaproj.io/v1alpha1.AbstractVertex">
@@ -533,9 +561,14 @@ Container
 <p>
 (<em>Appears on:</em>
 <a href="#numaflow.numaproj.io/v1alpha1.UDF">UDF</a>,
-<a href="#numaflow.numaproj.io/v1alpha1.UDSink">UDSink</a>)
+<a href="#numaflow.numaproj.io/v1alpha1.UDSink">UDSink</a>,
+<a href="#numaflow.numaproj.io/v1alpha1.UDTransformer">UDTransformer</a>)
 </p>
 <p>
+<p>
+Container is used to define the container properties for user defined
+functions, sinks, etc.
+</p>
 </p>
 <table>
 <thead>
@@ -603,6 +636,16 @@ Kubernetes core/v1.ResourceRequirements </a> </em>
 <em>(Optional)</em>
 </td>
 </tr>
+<tr>
+<td>
+<code>securityContext</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#securitycontext-v1-core">
+Kubernetes core/v1.SecurityContext </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="numaflow.numaproj.io/v1alpha1.ContainerTemplate">
@@ -640,6 +683,7 @@ Description
 Kubernetes core/v1.ResourceRequirements </a> </em>
 </td>
 <td>
+<em>(Optional)</em>
 </td>
 </tr>
 <tr>
@@ -649,6 +693,7 @@ Kubernetes core/v1.ResourceRequirements </a> </em>
 Kubernetes core/v1.PullPolicy </a> </em>
 </td>
 <td>
+<em>(Optional)</em>
 </td>
 </tr>
 <tr>
@@ -658,6 +703,7 @@ Kubernetes core/v1.PullPolicy </a> </em>
 Kubernetes core/v1.SecurityContext </a> </em>
 </td>
 <td>
+<em>(Optional)</em>
 </td>
 </tr>
 <tr>
@@ -667,6 +713,7 @@ Kubernetes core/v1.SecurityContext </a> </em>
 \[\]Kubernetes core/v1.EnvVar </a> </em>
 </td>
 <td>
+<em>(Optional)</em>
 </td>
 </tr>
 </tbody>
@@ -3616,6 +3663,16 @@ GeneratorSource </a> </em>
 <em>(Optional)</em>
 </td>
 </tr>
+<tr>
+<td>
+<code>transformer</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.UDTransformer"> UDTransformer
+</a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="numaflow.numaproj.io/v1alpha1.Status">
@@ -3780,6 +3837,52 @@ JobTemplate is used to customize Jobs
 </tr>
 </tbody>
 </table>
+<h3 id="numaflow.numaproj.io/v1alpha1.Transformer">
+Transformer
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.UDTransformer">UDTransformer</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>name</code></br> <em> string </em>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<code>args</code></br> <em> \[\]string </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+<tr>
+<td>
+<code>kwargs</code></br> <em> map\[string\]string </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="numaflow.numaproj.io/v1alpha1.UDF">
 UDF
 </h3>
@@ -3857,6 +3960,48 @@ Description
 <a href="#numaflow.numaproj.io/v1alpha1.Container"> Container </a> </em>
 </td>
 <td>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="numaflow.numaproj.io/v1alpha1.UDTransformer">
+UDTransformer
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.Source">Source</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>container</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.Container"> Container </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+<tr>
+<td>
+<code>builtin</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.Transformer"> Transformer </a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
 </td>
 </tr>
 </tbody>
