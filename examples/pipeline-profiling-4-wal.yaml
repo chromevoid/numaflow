@@ -19,7 +19,7 @@ spec:
       source:
         # A self data generating source
         generator:
-          rpu: 100
+          rpu: 1000
           duration: 1s
 #          msgSize: 256
     - name: cat
@@ -54,6 +54,6 @@ spec:
       to: cat
     - from: cat
       to: reduce
-      parallelism: 3
+      parallelism: 1
     - from: reduce
       to: sink

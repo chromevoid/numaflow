@@ -360,3 +360,63 @@ func Test_batchSyncWithSyncDuration(t *testing.T) {
 	err = newWal.Close()
 	assert.NoError(t, err)
 }
+
+// func Benchmark_encodeEntry(b *testing.B) {
+// 	msg := &isb.ReadMessage{
+// 		Message: isb.Message{
+// 			Header: isb.Header{},
+// 			Body:   isb.Body{},
+// 		},
+// 		ReadOffset: isb.SimpleIntOffset(func() int64 { return int64(2) }),
+// 	}
+//
+// 	wal := &WAL{}
+// 	var buff *bytes.Buffer
+//
+// 	for i := 0; i < b.N; i++ {
+// 		r, _ := wal.encodeEntryBody(msg)
+// 		buff = r
+// 	}
+//
+// 	_ = buff
+// }
+
+func Benchmark_encodeEntryHeader(b *testing.B) {
+	msg := &isb.ReadMessage{
+		Message: isb.Message{
+			Header: isb.Header{},
+			Body:   isb.Body{},
+		},
+		ReadOffset: isb.SimpleIntOffset(func() int64 { return int64(2) }),
+	}
+
+	wal := &WAL{}
+	var buff *bytes.Buffer
+
+	for i := 0; i < b.N; i++ {
+		r, _ := wal.encodeEntryHeader(msg, 20, 20)
+		buff = r
+	}
+
+	_ = buff
+}
+
+func Benchmark_encodeEntryHeaderGOB(b *testing.B) {
+	msg := &isb.ReadMessage{
+		Message: isb.Message{
+			Header: isb.Header{},
+			Body:   isb.Body{},
+		},
+		ReadOffset: isb.SimpleIntOffset(func() int64 { return int64(2) }),
+	}
+
+	wal := &WAL{}
+	var buff *bytes.Buffer
+
+	for i := 0; i < b.N; i++ {
+		r, _ := wal.encodeEntryHeaderGOB(msg, 20, 20)
+		buff = r
+	}
+
+	_ = buff
+}

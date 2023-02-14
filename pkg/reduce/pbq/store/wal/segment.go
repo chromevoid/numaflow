@@ -224,6 +224,28 @@ func (w *WAL) encodeEntryHeader(message *isb.ReadMessage, messageLen int64, chec
 	return buf, nil
 }
 
+func (w *WAL) encodeEntryHeaderGOB(message *isb.ReadMessage, messageLen int64, checksum uint32) (*bytes.Buffer, error) {
+	watermark := message.Watermark.UnixMilli()
+
+	offset, err := message.ReadOffset.Sequence()
+	if err != nil {
+		return nil, err
+	}
+
+	entryHeader := entryHeaderPreamble{
+		WaterMark:  watermark,
+		Offset:     offset,
+		MessageLen: messageLen,
+		Checksum:   checksum,
+	}
+
+	// write the fixed values
+	m := new(bytes.Buffer)
+	enc := gob.NewEncoder(m)
+	_ = enc.Encode(entryHeader)
+	return m, nil
+}
+
 func (w *WAL) encodeEntryBody(message *isb.ReadMessage) (*bytes.Buffer, error) {
 	m := new(bytes.Buffer)
 	enc := gob.NewEncoder(m)
