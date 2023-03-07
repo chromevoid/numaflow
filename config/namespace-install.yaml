@@ -5067,6 +5067,9 @@ spec:
                         replicasPerScale:
                           format: int32
                           type: integer
+                        targetBufferAvailability:
+                          format: int32
+                          type: integer
                         targetBufferUsage:
                           format: int32
                           type: integer
@@ -5859,7 +5862,30 @@ spec:
                                     - name
                                     type: object
                                   type: array
+                                envFrom:
+                                  items:
+                                    properties:
+                                      configMapRef:
+                                        properties:
+                                          name:
+                                            type: string
+                                          optional:
+                                            type: boolean
+                                        type: object
+                                      prefix:
+                                        type: string
+                                      secretRef:
+                                        properties:
+                                          name:
+                                            type: string
+                                          optional:
+                                            type: boolean
+                                        type: object
+                                    type: object
+                                  type: array
                                 image:
+                                  type: string
+                                imagePullPolicy:
                                   type: string
                                 resources:
                                   properties:
@@ -5973,12 +5999,18 @@ spec:
                             duration:
                               default: 1s
                               type: string
+                            keyCount:
+                              format: int32
+                              type: integer
                             msgSize:
                               default: 8
                               format: int32
                               type: integer
                             rpu:
                               default: 5
+                              format: int64
+                              type: integer
+                            value:
                               format: int64
                               type: integer
                           type: object
@@ -6245,7 +6277,30 @@ spec:
                                     - name
                                     type: object
                                   type: array
+                                envFrom:
+                                  items:
+                                    properties:
+                                      configMapRef:
+                                        properties:
+                                          name:
+                                            type: string
+                                          optional:
+                                            type: boolean
+                                        type: object
+                                      prefix:
+                                        type: string
+                                      secretRef:
+                                        properties:
+                                          name:
+                                            type: string
+                                          optional:
+                                            type: boolean
+                                        type: object
+                                    type: object
+                                  type: array
                                 image:
+                                  type: string
+                                imagePullPolicy:
                                   type: string
                                 resources:
                                   properties:
@@ -6456,7 +6511,30 @@ spec:
                                 - name
                                 type: object
                               type: array
+                            envFrom:
+                              items:
+                                properties:
+                                  configMapRef:
+                                    properties:
+                                      name:
+                                        type: string
+                                      optional:
+                                        type: boolean
+                                    type: object
+                                  prefix:
+                                    type: string
+                                  secretRef:
+                                    properties:
+                                      name:
+                                        type: string
+                                      optional:
+                                        type: boolean
+                                    type: object
+                                type: object
+                              type: array
                             image:
+                              type: string
+                            imagePullPolicy:
                               type: string
                             resources:
                               properties:
@@ -8763,6 +8841,9 @@ spec:
                   replicasPerScale:
                     format: int32
                     type: integer
+                  targetBufferAvailability:
+                    format: int32
+                    type: integer
                   targetBufferUsage:
                     format: int32
                     type: integer
@@ -9555,7 +9636,30 @@ spec:
                               - name
                               type: object
                             type: array
+                          envFrom:
+                            items:
+                              properties:
+                                configMapRef:
+                                  properties:
+                                    name:
+                                      type: string
+                                    optional:
+                                      type: boolean
+                                  type: object
+                                prefix:
+                                  type: string
+                                secretRef:
+                                  properties:
+                                    name:
+                                      type: string
+                                    optional:
+                                      type: boolean
+                                  type: object
+                              type: object
+                            type: array
                           image:
+                            type: string
+                          imagePullPolicy:
                             type: string
                           resources:
                             properties:
@@ -9669,12 +9773,18 @@ spec:
                       duration:
                         default: 1s
                         type: string
+                      keyCount:
+                        format: int32
+                        type: integer
                       msgSize:
                         default: 8
                         format: int32
                         type: integer
                       rpu:
                         default: 5
+                        format: int64
+                        type: integer
+                      value:
                         format: int64
                         type: integer
                     type: object
@@ -9941,7 +10051,30 @@ spec:
                               - name
                               type: object
                             type: array
+                          envFrom:
+                            items:
+                              properties:
+                                configMapRef:
+                                  properties:
+                                    name:
+                                      type: string
+                                    optional:
+                                      type: boolean
+                                  type: object
+                                prefix:
+                                  type: string
+                                secretRef:
+                                  properties:
+                                    name:
+                                      type: string
+                                    optional:
+                                      type: boolean
+                                  type: object
+                              type: object
+                            type: array
                           image:
+                            type: string
+                          imagePullPolicy:
                             type: string
                           resources:
                             properties:
@@ -10185,7 +10318,30 @@ spec:
                           - name
                           type: object
                         type: array
+                      envFrom:
+                        items:
+                          properties:
+                            configMapRef:
+                              properties:
+                                name:
+                                  type: string
+                                optional:
+                                  type: boolean
+                              type: object
+                            prefix:
+                              type: string
+                            secretRef:
+                              properties:
+                                name:
+                                  type: string
+                                optional:
+                                  type: boolean
+                              type: object
+                          type: object
+                        type: array
                       image:
+                        type: string
+                      imagePullPolicy:
                         type: string
                       resources:
                         properties:
@@ -11196,7 +11352,6 @@ rules:
   - pods/exec
   - pods/log
   - configmaps
-  - secrets
   - services
   verbs:
   - get
