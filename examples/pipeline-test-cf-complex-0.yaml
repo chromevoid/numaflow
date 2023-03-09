@@ -1,0 +1,87 @@
+apiVersion: numaflow.numaproj.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: reduce-sliding-pipeline
+spec:
+  vertices:
+    - name: in
+      source:
+        http: {}
+    - name: even-or-odd
+      scale:
+        min: 1
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true"
+      udf:
+        container:
+          # Tell the input number is even or odd, see https://github.com/numaproj/numaflow-go/tree/main/pkg/function/examples/even_odd
+          image: quay.io/numaio/numaflow-go/map-even-odd
+    - name: gen-ten
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true" # DO NOT forget the double quotes!!!
+      scale:
+        min: 1
+        max: 1
+      udf:
+        container:
+          image: quay.io/chromevoid/map-generate-ten
+    - name: fixed
+      udf:
+        container:
+          image: quay.io/numaio/numaflow-go/reduce-counter
+        groupBy:
+          window:
+            fixed:
+              length: 10s
+          keyed: true
+          storage:
+            persistentVolumeClaim:
+              volumeSize: 5Gi
+              accessMode: ReadWriteOnce
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true" # DO NOT forget the double quotes!!!
+    - name: sliding
+      udf:
+        container:
+          image: quay.io/numaio/numaflow-go/reduce-counter
+        groupBy:
+          window:
+            sliding:
+              length: 10s
+              slide: 5s
+          keyed: true
+          storage:
+            persistentVolumeClaim:
+              volumeSize: 5Gi
+              accessMode: ReadWriteOnce
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true" # DO NOT forget the double quotes!!!
+    - name: sink
+      scale:
+        min: 1
+      sink:
+        log: { }
+  edges:
+    - from: in
+      to: even-or-odd
+    - from: even-or-odd
+      to: gen-ten
+      conditions:
+        keyIn:
+          - even
+    - from: gen-ten
+      to: fixed
+      parallelism: 10
+    - from: fixed
+      to: sliding
+      parallelism: 5
+    - from: sliding
+      to: sink
