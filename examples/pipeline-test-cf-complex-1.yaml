@@ -27,7 +27,7 @@ spec:
         min: 1
       udf:
         container:
-          image: quay.io/chromevoid/map-generate-100
+          image: quay.io/chromevoid/map-generate-ten
     - name: even-fixed
       udf:
         container:
@@ -35,7 +35,7 @@ spec:
         groupBy:
           window:
             fixed:
-              length: 10s
+              length: 20s
           keyed: true
           storage:
             persistentVolumeClaim:
@@ -52,7 +52,7 @@ spec:
         groupBy:
           window:
             sliding:
-              length: 10s
+              length: 20s
               slide: 5s
           keyed: true
           storage:
@@ -77,7 +77,7 @@ spec:
         min: 1
       udf:
         container:
-          image: quay.io/chromevoid/map-generate-100
+          image: quay.io/chromevoid/map-generate-ten
     - name: odd-fixed
       udf:
         container:
@@ -85,7 +85,7 @@ spec:
         groupBy:
           window:
             fixed:
-              length: 10s
+              length: 20s
           keyed: true
           storage:
             persistentVolumeClaim:
@@ -102,7 +102,7 @@ spec:
         groupBy:
           window:
             sliding:
-              length: 10s
+              length: 20s
               slide: 5s
           keyed: true
           storage:
