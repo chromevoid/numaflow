@@ -35,7 +35,7 @@ spec:
         groupBy:
           window:
             fixed:
-              length: 20s
+              length: 10s
           keyed: true
           storage:
             persistentVolumeClaim:
@@ -45,15 +45,14 @@ spec:
         env:
           - name: NUMAFLOW_DEBUG
             value: "true" # DO NOT forget the double quotes!!!
-    - name: even-sliding
+    - name: even-fixed-20
       udf:
         container:
           image: quay.io/numaio/numaflow-go/reduce-counter
         groupBy:
           window:
-            sliding:
+            fixed:
               length: 20s
-              slide: 5s
           keyed: true
           storage:
             persistentVolumeClaim:
@@ -63,6 +62,24 @@ spec:
         env:
           - name: NUMAFLOW_DEBUG
             value: "true" # DO NOT forget the double quotes!!!
+#    - name: even-sliding
+#      udf:
+#        container:
+#          image: quay.io/numaio/numaflow-go/reduce-counter
+#        groupBy:
+#          window:
+#            sliding:
+#              length: 20s
+#              slide: 5s
+#          keyed: true
+#          storage:
+#            persistentVolumeClaim:
+#              volumeSize: 5Gi
+#              accessMode: ReadWriteOnce
+#      containerTemplate:
+#        env:
+#          - name: NUMAFLOW_DEBUG
+#            value: "true" # DO NOT forget the double quotes!!!
     - name: even-sink
       scale:
         min: 1
@@ -85,7 +102,7 @@ spec:
         groupBy:
           window:
             fixed:
-              length: 20s
+              length: 10s
           keyed: true
           storage:
             persistentVolumeClaim:
@@ -95,15 +112,14 @@ spec:
         env:
           - name: NUMAFLOW_DEBUG
             value: "true" # DO NOT forget the double quotes!!!
-    - name: odd-sliding
+    - name: odd-fixed-20
       udf:
         container:
           image: quay.io/numaio/numaflow-go/reduce-counter
         groupBy:
           window:
-            sliding:
+            fixed:
               length: 20s
-              slide: 5s
           keyed: true
           storage:
             persistentVolumeClaim:
@@ -113,6 +129,24 @@ spec:
         env:
           - name: NUMAFLOW_DEBUG
             value: "true" # DO NOT forget the double quotes!!!
+#    - name: odd-sliding
+#      udf:
+#        container:
+#          image: quay.io/numaio/numaflow-go/reduce-counter
+#        groupBy:
+#          window:
+#            sliding:
+#              length: 20s
+#              slide: 5s
+#          keyed: true
+#          storage:
+#            persistentVolumeClaim:
+#              volumeSize: 5Gi
+#              accessMode: ReadWriteOnce
+#      containerTemplate:
+#        env:
+#          - name: NUMAFLOW_DEBUG
+#            value: "true" # DO NOT forget the double quotes!!!
     - name: odd-sink
       scale:
         min: 1
@@ -130,9 +164,11 @@ spec:
       to: even-fixed
       parallelism: 5
     - from: even-fixed
-      to: even-sliding
+#      to: even-sliding
+      to: even-fixed-20
       parallelism: 10
-    - from: even-sliding
+#    - from: even-sliding
+    - from: even-fixed-20
       to: even-sink
     - from: even-or-odd
       to: odd-gen-ten
@@ -143,7 +179,9 @@ spec:
       to: odd-fixed
       parallelism: 5
     - from: odd-fixed
-      to: odd-sliding
+#      to: odd-sliding
+      to: odd-fixed-20
       parallelism: 10
-    - from: odd-sliding
+#    - from: odd-sliding
+    - from: odd-fixed-20
       to: odd-sink
