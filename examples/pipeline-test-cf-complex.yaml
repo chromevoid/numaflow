@@ -17,7 +17,7 @@ spec:
       containerTemplate:
         env:
           - name: NUMAFLOW_DEBUG
-            value: "true"
+            value: "false"
       udf:
         container:
           # Tell the input number is even or odd, see https://github.com/numaproj/numaflow-go/tree/main/pkg/function/examples/even_odd
@@ -26,7 +26,7 @@ spec:
       containerTemplate:
         env:
           - name: NUMAFLOW_DEBUG
-            value: "true" # DO NOT forget the double quotes!!!
+            value: "false" # DO NOT forget the double quotes!!!
       scale:
         min: 1
       udf:
@@ -48,7 +48,7 @@ spec:
       containerTemplate:
         env:
           - name: NUMAFLOW_DEBUG
-            value: "true" # DO NOT forget the double quotes!!!
+            value: "false" # DO NOT forget the double quotes!!!
     - name: even-fixed-20
       udf:
         container:
@@ -75,7 +75,7 @@ spec:
       containerTemplate:
         env:
           - name: NUMAFLOW_DEBUG
-            value: "true" # DO NOT forget the double quotes!!!
+            value: "flase" # DO NOT forget the double quotes!!!
       scale:
         min: 1
       udf:
@@ -97,7 +97,7 @@ spec:
       containerTemplate:
         env:
           - name: NUMAFLOW_DEBUG
-            value: "true" # DO NOT forget the double quotes!!!
+            value: "false" # DO NOT forget the double quotes!!!
     - name: odd-fixed-20
       udf:
         container:
@@ -130,10 +130,10 @@ spec:
           - "key-2"
     - from: even-gen-ten
       to: even-fixed
-      parallelism: 5
+      parallelism: 2
     - from: even-fixed
       to: even-fixed-20
-      parallelism: 10
+      parallelism: 2
     - from: even-fixed-20
       to: even-sink
     - from: even-or-odd
@@ -143,9 +143,9 @@ spec:
           - "key-1"
     - from: odd-gen-ten
       to: odd-fixed
-      parallelism: 5
+      parallelism: 2
     - from: odd-fixed
       to: odd-fixed-20
-      parallelism: 10
+      parallelism: 2
     - from: odd-fixed-20
       to: odd-sink
