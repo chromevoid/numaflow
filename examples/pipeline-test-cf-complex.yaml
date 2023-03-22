@@ -1,0 +1,151 @@
+apiVersion: numaflow.numaproj.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: reduce-sliding-pipeline
+spec:
+  vertices:
+    - name: in
+      source:
+        generator:
+          keyCount: 2
+          msgSize: 1000
+          rpu: 1
+          value: 1
+    - name: even-or-odd
+      scale:
+        min: 1
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true"
+      udf:
+        container:
+          # Tell the input number is even or odd, see https://github.com/numaproj/numaflow-go/tree/main/pkg/function/examples/even_odd
+          image: docker.intuit.com/personal/yhl01/tickgen-map:v0.0.1
+    - name: even-gen-ten
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true" # DO NOT forget the double quotes!!!
+      scale:
+        min: 1
+      udf:
+        container:
+          image: quay.io/chromevoid/generate-ten:latest
+    - name: even-fixed
+      udf:
+        container:
+          image: quay.io/numaio/numaflow-go/reduce-counter
+        groupBy:
+          window:
+            fixed:
+              length: 10s
+          keyed: true
+          storage:
+            persistentVolumeClaim:
+              volumeSize: 5Gi
+              accessMode: ReadWriteOnce
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true" # DO NOT forget the double quotes!!!
+    - name: even-fixed-20
+      udf:
+        container:
+          image: quay.io/numaio/numaflow-go/reduce-counter
+        groupBy:
+          window:
+            fixed:
+              length: 20s
+          keyed: true
+          storage:
+            persistentVolumeClaim:
+              volumeSize: 5Gi
+              accessMode: ReadWriteOnce
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true" # DO NOT forget the double quotes!!!
+    - name: even-sink
+      scale:
+        min: 1
+      sink:
+        log: { }
+    - name: odd-gen-ten
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true" # DO NOT forget the double quotes!!!
+      scale:
+        min: 1
+      udf:
+        container:
+          image: quay.io/chromevoid/generate-ten:latest
+    - name: odd-fixed
+      udf:
+        container:
+          image: quay.io/numaio/numaflow-go/reduce-counter
+        groupBy:
+          window:
+            fixed:
+              length: 10s
+          keyed: true
+          storage:
+            persistentVolumeClaim:
+              volumeSize: 5Gi
+              accessMode: ReadWriteOnce
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true" # DO NOT forget the double quotes!!!
+    - name: odd-fixed-20
+      udf:
+        container:
+          image: quay.io/numaio/numaflow-go/reduce-counter
+        groupBy:
+          window:
+            fixed:
+              length: 20s
+          keyed: true
+          storage:
+            persistentVolumeClaim:
+              volumeSize: 5Gi
+              accessMode: ReadWriteOnce
+      containerTemplate:
+        env:
+          - name: NUMAFLOW_DEBUG
+            value: "true" # DO NOT forget the double quotes!!!
+    - name: odd-sink
+      scale:
+        min: 1
+      sink:
+        log: {}
+  edges:
+    - from: in
+      to: even-or-odd
+    - from: even-or-odd
+      to: even-gen-ten
+      conditions:
+        keyIn:
+          - "key-2"
+    - from: even-gen-ten
+      to: even-fixed
+      parallelism: 5
+    - from: even-fixed
+      to: even-fixed-20
+      parallelism: 10
+    - from: even-fixed-20
+      to: even-sink
+    - from: even-or-odd
+      to: odd-gen-ten
+      conditions:
+        keyIn:
+          - "key-1"
+    - from: odd-gen-ten
+      to: odd-fixed
+      parallelism: 5
+    - from: odd-fixed
+      to: odd-fixed-20
+      parallelism: 10
+    - from: odd-fixed-20
+      to: odd-sink
