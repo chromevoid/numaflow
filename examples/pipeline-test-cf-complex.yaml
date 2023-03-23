@@ -31,7 +31,7 @@ spec:
         min: 1
       udf:
         container:
-          image: quay.io/chromevoid/generate-ten:latest
+          image: quay.io/chromevoid/map-generate-ten
     - name: even-fixed
       udf:
         container:
@@ -80,7 +80,7 @@ spec:
         min: 1
       udf:
         container:
-          image: quay.io/chromevoid/generate-ten:latest
+          image: quay.io/chromevoid/map-generate-ten
     - name: odd-fixed
       udf:
         container:
