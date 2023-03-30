@@ -46,7 +46,7 @@ type BufferWrite struct {
 	Group  string
 	*BufferWriteInfo
 	*redisclient.RedisClient
-	options
+	redisclient.Options
 	log *zap.SugaredLogger
 }
 
@@ -65,18 +65,19 @@ type BufferWriteInfo struct {
 var _ isb.BufferWriter = (*BufferWrite)(nil)
 
 // NewBufferWrite returns a new redis queue writer.
-func NewBufferWrite(ctx context.Context, client *redisclient.RedisClient, name string, group string, opts ...Option) isb.BufferWriter {
-	options := &options{
-		pipelining:             true,
-		infoRefreshInterval:    time.Second,
-		lagDuration:            time.Duration(0),
-		maxLength:              dfv1.DefaultBufferLength,
-		bufferUsageLimit:       dfv1.DefaultBufferUsageLimit,
-		refreshBufferWriteInfo: true,
+func NewBufferWrite(ctx context.Context, client *redisclient.RedisClient, name string, group string, opts ...redisclient.Option) isb.BufferWriter {
+	options := &redisclient.Options{
+		Pipelining:                true,
+		InfoRefreshInterval:       time.Second,
+		LagDuration:               time.Duration(0),
+		MaxLength:                 dfv1.DefaultBufferLength,
+		BufferUsageLimit:          dfv1.DefaultBufferUsageLimit,
+		RefreshBufferWriteInfo:    true,
+		BufferFullWritingStrategy: dfv1.RetryUntilSuccess,
 	}
 
 	for _, o := range opts {
-		o.apply(options)
+		o.Apply(options)
 	}
 
 	// check whether the script exists, if not then load
@@ -90,20 +91,20 @@ func NewBufferWrite(ctx context.Context, client *redisclient.RedisClient, name s
 			consumerLag:      atomic.NewDuration(0),
 			minId:            atomic.NewString("0-0"),
 			// During start up if we set pending count to 0 we are saying nothing is pending.
-			pendingCount:       atomic.NewInt64(options.maxLength),
-			bufferLength:       atomic.NewInt64(options.maxLength),
+			pendingCount:       atomic.NewInt64(options.MaxLength),
+			bufferLength:       atomic.NewInt64(options.MaxLength),
 			hasUnprocessedData: atomic.NewBool(true),
 		},
 		RedisClient: client,
-		options:     *options,
 	}
+	rqw.Options = *options
 
 	rqw.log = logging.FromContext(ctx).With("bufferWriter", rqw.GetName())
 
 	// setWriteInfo is used to update isFull flag and minId once
 	rqw.setWriteInfo(ctx)
 
-	if rqw.options.refreshBufferWriteInfo {
+	if rqw.Options.RefreshBufferWriteInfo {
 		// refresh isFull flag at a periodic interval
 		go rqw.refreshWriteInfo(ctx)
 	}
@@ -113,7 +114,7 @@ func NewBufferWrite(ctx context.Context, client *redisclient.RedisClient, name s
 
 // refreshWriteInfo is used to refresh the changes
 func (bw *BufferWrite) refreshWriteInfo(ctx context.Context) {
-	ticker := time.NewTicker(bw.options.infoRefreshInterval)
+	ticker := time.NewTicker(bw.Options.InfoRefreshInterval)
 	defer ticker.Stop()
 	bw.log.Infow("refreshWriteInfo has started")
 	for {
@@ -158,12 +159,22 @@ func (bw *BufferWrite) Write(_ context.Context, messages []isb.Message) ([]isb.O
 	if bw.IsFull() {
 		bw.log.Debugw("Is full")
 		isbIsFull.With(labels).Inc()
-		initializeErrorArray(errs, isb.BufferWriteErr{Name: bw.Name, Full: true, Message: "Buffer full!"})
+
+		// when buffer is full, we need to decide whether to discard the message or not.
+		switch bw.BufferFullWritingStrategy {
+		case dfv1.DiscardLatest:
+			// user explicitly wants to discard the message when buffer if full.
+			// return no retryable error as a callback to let caller know that the message is discarded.
+			initializeErrorArray(errs, isb.NoRetryableBufferWriteErr{Name: bw.Name, Message: "Buffer full!"})
+		default:
+			// Default behavior is to return a BufferWriteErr.
+			initializeErrorArray(errs, isb.BufferWriteErr{Name: bw.Name, Full: true, Message: "Buffer full!"})
+		}
 		isbWriteErrors.With(labels).Inc()
 		return nil, errs
 	}
 	// Maybe just do pipelined write, always?
-	if !bw.pipelining {
+	if !bw.Pipelining {
 		for idx, message := range messages {
 			// Reference the Payload in Body directly when writing to Redis ISB to avoid extra marshaling.
 			// TODO: revisit directly Payload reference when Body structure changes

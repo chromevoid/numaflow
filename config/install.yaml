@@ -2522,6 +2522,11 @@ spec:
                           format: int32
                           type: integer
                       type: object
+                    onFull:
+                      enum:
+                      - retryUntilSuccess
+                      - discardLatest
+                      type: string
                     parallelism:
                       format: int32
                       type: integer
@@ -6405,6 +6410,83 @@ spec:
                               type: string
                             consumerGroup:
                               type: string
+                            sasl:
+                              properties:
+                                gssapi:
+                                  properties:
+                                    authType:
+                                      type: string
+                                    kerberosConfigSecret:
+                                      properties:
+                                        key:
+                                          type: string
+                                        name:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                      required:
+                                      - key
+                                      type: object
+                                    keytabSecret:
+                                      properties:
+                                        key:
+                                          type: string
+                                        name:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                      required:
+                                      - key
+                                      type: object
+                                    passwordSecret:
+                                      properties:
+                                        key:
+                                          type: string
+                                        name:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                      required:
+                                      - key
+                                      type: object
+                                    realm:
+                                      type: string
+                                    serviceName:
+                                      type: string
+                                    username:
+                                      type: string
+                                  required:
+                                  - authType
+                                  - realm
+                                  - serviceName
+                                  - username
+                                  type: object
+                                mechanism:
+                                  type: string
+                                plain:
+                                  properties:
+                                    handshake:
+                                      type: boolean
+                                    passwordSecret:
+                                      properties:
+                                        key:
+                                          type: string
+                                        name:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                      required:
+                                      - key
+                                      type: object
+                                    user:
+                                      type: string
+                                  required:
+                                  - handshake
+                                  - user
+                                  type: object
+                              required:
+                              - mechanism
+                              type: object
                             tls:
                               properties:
                                 caCertSecret:
@@ -6548,6 +6630,87 @@ spec:
                           - queue
                           - subject
                           - url
+                          type: object
+                        redisStreams:
+                          properties:
+                            consumerGroup:
+                              type: string
+                            masterName:
+                              type: string
+                            password:
+                              properties:
+                                key:
+                                  type: string
+                                name:
+                                  type: string
+                                optional:
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                            readFromBeginning:
+                              type: boolean
+                            sentinelPassword:
+                              properties:
+                                key:
+                                  type: string
+                                name:
+                                  type: string
+                                optional:
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                            sentinelUrl:
+                              type: string
+                            stream:
+                              type: string
+                            tls:
+                              properties:
+                                caCertSecret:
+                                  properties:
+                                    key:
+                                      type: string
+                                    name:
+                                      type: string
+                                    optional:
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                clientCertSecret:
+                                  properties:
+                                    key:
+                                      type: string
+                                    name:
+                                      type: string
+                                    optional:
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                clientKeySecret:
+                                  properties:
+                                    key:
+                                      type: string
+                                    name:
+                                      type: string
+                                    optional:
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                insecureSkipVerify:
+                                  type: boolean
+                              type: object
+                            url:
+                              type: string
+                            user:
+                              type: string
+                          required:
+                          - consumerGroup
+                          - readFromBeginning
+                          - stream
                           type: object
                         transformer:
                           properties:
@@ -8438,6 +8601,11 @@ spec:
                           format: int32
                           type: integer
                       type: object
+                    onFull:
+                      enum:
+                      - retryUntilSuccess
+                      - discardLatest
+                      type: string
                     parallelism:
                       format: int32
                       type: integer
@@ -10243,6 +10411,83 @@ spec:
                         type: string
                       consumerGroup:
                         type: string
+                      sasl:
+                        properties:
+                          gssapi:
+                            properties:
+                              authType:
+                                type: string
+                              kerberosConfigSecret:
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                              keytabSecret:
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                              passwordSecret:
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                              realm:
+                                type: string
+                              serviceName:
+                                type: string
+                              username:
+                                type: string
+                            required:
+                            - authType
+                            - realm
+                            - serviceName
+                            - username
+                            type: object
+                          mechanism:
+                            type: string
+                          plain:
+                            properties:
+                              handshake:
+                                type: boolean
+                              passwordSecret:
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                              user:
+                                type: string
+                            required:
+                            - handshake
+                            - user
+                            type: object
+                        required:
+                        - mechanism
+                        type: object
                       tls:
                         properties:
                           caCertSecret:
@@ -10386,6 +10631,87 @@ spec:
                     - queue
                     - subject
                     - url
+                    type: object
+                  redisStreams:
+                    properties:
+                      consumerGroup:
+                        type: string
+                      masterName:
+                        type: string
+                      password:
+                        properties:
+                          key:
+                            type: string
+                          name:
+                            type: string
+                          optional:
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                      readFromBeginning:
+                        type: boolean
+                      sentinelPassword:
+                        properties:
+                          key:
+                            type: string
+                          name:
+                            type: string
+                          optional:
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                      sentinelUrl:
+                        type: string
+                      stream:
+                        type: string
+                      tls:
+                        properties:
+                          caCertSecret:
+                            properties:
+                              key:
+                                type: string
+                              name:
+                                type: string
+                              optional:
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                          clientCertSecret:
+                            properties:
+                              key:
+                                type: string
+                              name:
+                                type: string
+                              optional:
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                          clientKeySecret:
+                            properties:
+                              key:
+                                type: string
+                              name:
+                                type: string
+                              optional:
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                          insecureSkipVerify:
+                            type: boolean
+                        type: object
+                      url:
+                        type: string
+                      user:
+                        type: string
+                    required:
+                    - consumerGroup
+                    - readFromBeginning
+                    - stream
                     type: object
                   transformer:
                     properties:
@@ -10628,6 +10954,11 @@ spec:
                           format: int32
                           type: integer
                       type: object
+                    onFull:
+                      enum:
+                      - retryUntilSuccess
+                      - discardLatest
+                      type: string
                     parallelism:
                       format: int32
                       type: integer

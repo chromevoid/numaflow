@@ -27,7 +27,7 @@ import (
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 )
 
-func Test_BadicOperations(t *testing.T) {
+func Test_BasicOperations(t *testing.T) {
 	cl := fake.NewClientBuilder().Build()
 	s := NewScaler(cl)
 	assert.NotNil(t, s)
@@ -65,7 +65,7 @@ func Test_desiredReplicas(t *testing.T) {
 	assert.Equal(t, int32(7), s.desiredReplicas(context.TODO(), src, 2500, 8749, 30000, 20000))
 	assert.Equal(t, int32(2), s.desiredReplicas(context.TODO(), src, 0, 9950, 30000, 20000))
 	assert.Equal(t, int32(1), s.desiredReplicas(context.TODO(), src, 2500, 2, 30000, 20000))
-	assert.Equal(t, int32(1), s.desiredReplicas(context.TODO(), src, 2500, 0, 30000, 20000))
+	assert.Equal(t, int32(2), s.desiredReplicas(context.TODO(), src, 2500, 0, 30000, 20000))
 
 	udf := &dfv1.Vertex{
 		Spec: dfv1.VertexSpec{

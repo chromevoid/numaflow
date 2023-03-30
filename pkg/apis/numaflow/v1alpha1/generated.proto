@@ -274,10 +274,17 @@ message Edge {
   optional EdgeLimits limits = 4;
 
   // Parallelism is only effective when the "to" vertex is a reduce vertex,
-  // if it's provided, the default value is set to "1".
+  // if it's not provided, the default value is set to "1".
   // Parallelism is ignored when the "to" vertex is not a reduce vertex.
   // +optional
   optional int32 parallelism = 5;
+
+  // OnFull specifies the behaviour for the write actions when the inter step buffer is full.
+  // There are currently two options, retryUntilSuccess and discardLatest.
+  // if not provided, the default value is set to "retryUntilSuccess"
+  // +kubebuilder:validation:Enum=retryUntilSuccess;discardLatest
+  // +optional
+  optional string onFull = 6;
 }
 
 message EdgeLimits {
@@ -310,6 +317,30 @@ message Function {
 
   // +optional
   map<string, string> kwargs = 3;
+}
+
+// GSSAPI represents a SASL GSSAPI config
+message GSSAPI {
+  optional string serviceName = 1;
+
+  optional string realm = 2;
+
+  optional string username = 3;
+
+  // valid inputs - KRB5_USER_AUTH, KRB5_KEYTAB_AUTH
+  optional string authType = 4;
+
+  // PasswordSecret refers to the secret that contains the password
+  // +optional
+  optional k8s.io.api.core.v1.SecretKeySelector passwordSecret = 5;
+
+  // KeytabSecret refers to the secret that contains the keytab
+  // +optional
+  optional k8s.io.api.core.v1.SecretKeySelector keytabSecret = 6;
+
+  // KerberosConfigSecret refers to the secret that contains the kerberos config
+  // +optional
+  optional k8s.io.api.core.v1.SecretKeySelector kerberosConfigSecret = 7;
 }
 
 message GeneratorSource {
@@ -625,6 +656,11 @@ message KafkaSource {
 
   // +optional
   optional string config = 5;
+
+  // SASL user to configure SASL connection for kafka broker
+  // SASL.enable=true default for SASL.
+  // +optional
+  optional SASL sasl = 6;
 }
 
 message Lifecycle {
@@ -898,6 +934,44 @@ message RedisSettings {
   optional string sentinel = 4;
 }
 
+message RedisStreamsSource {
+  // RedisConfig contains connectivity info
+  optional RedisConfig redisConfig = 1;
+
+  optional string stream = 2;
+
+  optional string consumerGroup = 3;
+
+  // if true, stream starts being read from the beginning; otherwise, the latest
+  optional bool readFromBeginning = 4;
+
+  // +optional
+  optional TLS tls = 5;
+}
+
+message SASL {
+  // SASL mechanism to use
+  optional string mechanism = 1;
+
+  // GSSAPI contains the kerberos config
+  // +optional
+  optional GSSAPI gssapi = 2;
+
+  // SASLPlain contains the sasl plain config
+  // +optional
+  optional SASLPlain plain = 3;
+}
+
+message SASLPlain {
+  optional string user = 1;
+
+  // PasswordSecret refers to the secret that contains the password
+  // +optional
+  optional k8s.io.api.core.v1.SecretKeySelector passwordSecret = 2;
+
+  optional bool handshake = 3;
+}
+
 // Scale defines the parameters for autoscaling.
 message Scale {
   // Whether to disable autoscaling.
@@ -981,7 +1055,10 @@ message Source {
   optional NatsSource nats = 4;
 
   // +optional
-  optional UDTransformer transformer = 5;
+  optional RedisStreamsSource redisStreams = 5;
+
+  // +optional
+  optional UDTransformer transformer = 6;
 }
 
 // Status is a common structure which can be used for Status field.

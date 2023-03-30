@@ -26,6 +26,7 @@ import (
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
+	"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 	"github.com/numaproj/numaflow/pkg/isb"
 	jsclient "github.com/numaproj/numaflow/pkg/shared/clients/nats"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
@@ -89,7 +90,7 @@ func NewJetStreamBufferWriter(ctx context.Context, client jsclient.JetStreamClie
 
 func (jw *jetStreamWriter) runStatusChecker(ctx context.Context) {
 	labels := map[string]string{"buffer": jw.GetName()}
-	// Use a separated JetStrea context for status checker
+	// Use a separated JetStream context for status checker
 	js, err := jw.conn.JetStream()
 	if err != nil {
 		// Let it exit if it fails to start the status checker
@@ -163,7 +164,7 @@ func (jw *jetStreamWriter) Close() error {
 	return nil
 }
 
-// Rate returns the writting rate (tps) in the past seconds
+// Rate returns the writing rate (tps) in the past seconds
 func (jw *jetStreamWriter) Rate(_ context.Context, seconds int64) (float64, error) {
 	if !jw.opts.useWriteInfoAsRate {
 		return isb.RateNotAvailable, nil
@@ -197,8 +198,19 @@ func (jw *jetStreamWriter) Write(ctx context.Context, messages []isb.Message) ([
 	if jw.isFull.Load() {
 		jw.log.Debugw("Is full")
 		isbFull.With(map[string]string{"buffer": jw.GetName()}).Inc()
-		for i := 0; i < len(errs); i++ {
-			errs[i] = isb.BufferWriteErr{Name: jw.name, Full: true, Message: "Buffer full!"}
+		// when buffer is full, we need to decide whether to discard the message or not.
+		switch jw.opts.bufferFullWritingStrategy {
+		case v1alpha1.DiscardLatest:
+			// user explicitly wants to discard the message when buffer if full.
+			// return no retryable error as a callback to let caller know that the message is discarded.
+			for i := 0; i < len(errs); i++ {
+				errs[i] = isb.NoRetryableBufferWriteErr{Name: jw.name, Message: "Buffer full!"}
+			}
+		default:
+			// Default behavior is to return a BufferWriteErr.
+			for i := 0; i < len(errs); i++ {
+				errs[i] = isb.BufferWriteErr{Name: jw.name, Full: true, Message: "Buffer full!"}
+			}
 		}
 		isbWriteErrors.With(labels).Inc()
 		return nil, errs

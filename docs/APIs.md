@@ -526,6 +526,16 @@ Description
 </tr>
 </tbody>
 </table>
+<h3 id="numaflow.numaproj.io/v1alpha1.BufferFullWritingStrategy">
+BufferFullWritingStrategy (<code>string</code> alias)
+</p>
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.Edge">Edge</a>)
+</p>
+<p>
+</p>
 <h3 id="numaflow.numaproj.io/v1alpha1.BufferServiceConfig">
 BufferServiceConfig
 </h3>
@@ -921,8 +931,24 @@ edge, will override pipeline level settings.
 <em>(Optional)</em>
 <p>
 Parallelism is only effective when the “to” vertex is a reduce vertex,
-if it’s provided, the default value is set to “1”. Parallelism is
+if it’s not provided, the default value is set to “1”. Parallelism is
 ignored when the “to” vertex is not a reduce vertex.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>onFull</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.BufferFullWritingStrategy">
+BufferFullWritingStrategy </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+OnFull specifies the behaviour for the write actions when the inter step
+buffer is full. There are currently two options, retryUntilSuccess and
+discardLatest. if not provided, the default value is set to
+“retryUntilSuccess”
 </p>
 </td>
 </tr>
@@ -1083,6 +1109,105 @@ Description
 </td>
 <td>
 <em>(Optional)</em>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="numaflow.numaproj.io/v1alpha1.GSSAPI">
+GSSAPI
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.SASL">SASL</a>)
+</p>
+<p>
+<p>
+GSSAPI represents a SASL GSSAPI config
+</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>serviceName</code></br> <em> string </em>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<code>realm</code></br> <em> string </em>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<code>username</code></br> <em> string </em>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<code>authType</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.KRB5AuthType"> KRB5AuthType </a>
+</em>
+</td>
+<td>
+<p>
+valid inputs - KRB5_USER_AUTH, KRB5_KEYTAB_AUTH
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>passwordSecret</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#secretkeyselector-v1-core">
+Kubernetes core/v1.SecretKeySelector </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+PasswordSecret refers to the secret that contains the password
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>keytabSecret</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#secretkeyselector-v1-core">
+Kubernetes core/v1.SecretKeySelector </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+KeytabSecret refers to the secret that contains the keytab
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>kerberosConfigSecret</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#secretkeyselector-v1-core">
+Kubernetes core/v1.SecretKeySelector </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+KerberosConfigSecret refers to the secret that contains the kerberos
+config
+</p>
 </td>
 </tr>
 </tbody>
@@ -2225,6 +2350,19 @@ Numaflow defaults to 20
 </tr>
 </tbody>
 </table>
+<h3 id="numaflow.numaproj.io/v1alpha1.KRB5AuthType">
+KRB5AuthType (<code>string</code> alias)
+</p>
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.GSSAPI">GSSAPI</a>)
+</p>
+<p>
+<p>
+KRB5AuthType describes the kerberos auth type
+</p>
+</p>
 <h3 id="numaflow.numaproj.io/v1alpha1.KafkaSink">
 KafkaSink
 </h3>
@@ -2344,6 +2482,19 @@ default for TLS.
 </td>
 <td>
 <em>(Optional)</em>
+</td>
+</tr>
+<tr>
+<td>
+<code>sasl</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.SASL"> SASL </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+SASL user to configure SASL connection for kafka broker SASL.enable=true
+default for SASL.
+</p>
 </td>
 </tr>
 </tbody>
@@ -3288,7 +3439,8 @@ RedisConfig
 <p>
 (<em>Appears on:</em>
 <a href="#numaflow.numaproj.io/v1alpha1.BufferServiceConfig">BufferServiceConfig</a>,
-<a href="#numaflow.numaproj.io/v1alpha1.RedisBufferService">RedisBufferService</a>)
+<a href="#numaflow.numaproj.io/v1alpha1.RedisBufferService">RedisBufferService</a>,
+<a href="#numaflow.numaproj.io/v1alpha1.RedisStreamsSource">RedisStreamsSource</a>)
 </p>
 <p>
 </p>
@@ -3447,6 +3599,199 @@ config
 </tr>
 </tbody>
 </table>
+<h3 id="numaflow.numaproj.io/v1alpha1.RedisStreamsSource">
+RedisStreamsSource
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.Source">Source</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>RedisConfig</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.RedisConfig"> RedisConfig </a>
+</em>
+</td>
+<td>
+<p>
+(Members of <code>RedisConfig</code> are embedded into this type.)
+</p>
+<p>
+RedisConfig contains connectivity info
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>stream</code></br> <em> string </em>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<code>consumerGroup</code></br> <em> string </em>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<code>readFromBeginning</code></br> <em> bool </em>
+</td>
+<td>
+<p>
+if true, stream starts being read from the beginning; otherwise, the
+latest
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>tls</code></br> <em> <a href="#numaflow.numaproj.io/v1alpha1.TLS">
+TLS </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="numaflow.numaproj.io/v1alpha1.SASL">
+SASL
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.KafkaSource">KafkaSource</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>mechanism</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.SASLType"> SASLType </a> </em>
+</td>
+<td>
+<p>
+SASL mechanism to use
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>gssapi</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.GSSAPI"> GSSAPI </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+GSSAPI contains the kerberos config
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>plain</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.SASLPlain"> SASLPlain </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+SASLPlain contains the sasl plain config
+</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="numaflow.numaproj.io/v1alpha1.SASLPlain">
+SASLPlain
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.SASL">SASL</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>user</code></br> <em> string </em>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<code>passwordSecret</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#secretkeyselector-v1-core">
+Kubernetes core/v1.SecretKeySelector </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+PasswordSecret refers to the secret that contains the password
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>handshake</code></br> <em> bool </em>
+</td>
+<td>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="numaflow.numaproj.io/v1alpha1.SASLType">
+SASLType (<code>string</code> alias)
+</p>
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.SASL">SASL</a>)
+</p>
+<p>
+<p>
+SASLType describes the SASL type
+</p>
+</p>
 <h3 id="numaflow.numaproj.io/v1alpha1.Scale">
 Scale
 </h3>
@@ -3762,6 +4107,16 @@ GeneratorSource </a> </em>
 </tr>
 <tr>
 <td>
+<code>redisStreams</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.RedisStreamsSource">
+RedisStreamsSource </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+<tr>
+<td>
 <code>transformer</code></br> <em>
 <a href="#numaflow.numaproj.io/v1alpha1.UDTransformer"> UDTransformer
 </a> </em>
@@ -3820,7 +4175,8 @@ TLS
 (<em>Appears on:</em>
 <a href="#numaflow.numaproj.io/v1alpha1.KafkaSink">KafkaSink</a>,
 <a href="#numaflow.numaproj.io/v1alpha1.KafkaSource">KafkaSource</a>,
-<a href="#numaflow.numaproj.io/v1alpha1.NatsSource">NatsSource</a>)
+<a href="#numaflow.numaproj.io/v1alpha1.NatsSource">NatsSource</a>,
+<a href="#numaflow.numaproj.io/v1alpha1.RedisStreamsSource">RedisStreamsSource</a>)
 </p>
 <p>
 </p>
