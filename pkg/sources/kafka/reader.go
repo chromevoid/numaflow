@@ -193,6 +193,8 @@ func (r *KafkaSource) Ack(_ context.Context, offsets []isb.Offset) []error {
 	return make([]error, len(offsets))
 }
 
+func (r *KafkaSource) NoAck(_ context.Context, _ []isb.Offset) {}
+
 func (r *KafkaSource) Start() <-chan struct{} {
 	go r.startConsumer()
 	// wait for the consumer to setup.
@@ -252,11 +254,17 @@ func (r *KafkaSource) Pending(ctx context.Context) (int64, error) {
 		return isb.PendingNotAvailable, fmt.Errorf("failed to list consumer group offsets, %w", err)
 	}
 	for _, partition := range partitions {
+		block := rep.GetBlock(r.topic, partition)
+		if block.Offset == -1 {
+			// Note: if there is no offset associated with the partition under the consumer group, offset fetch sets the offset field to -1.
+			// This is not an error and usually means that there has been no data published to this particular partition yet.
+			// In this case, we can safely skip this partition from the pending calculation.
+			continue
+		}
 		partitionOffset, err := r.saramaClient.GetOffset(r.topic, partition, sarama.OffsetNewest)
 		if err != nil {
 			return isb.PendingNotAvailable, fmt.Errorf("failed to get offset of topic %q, partition %v, %w", r.topic, partition, err)
 		}
-		block := rep.GetBlock(r.topic, partition)
 		totalPending += partitionOffset - block.Offset
 	}
 	return totalPending, nil
@@ -308,35 +316,11 @@ func NewKafkaSource(
 			config.Net.TLS.Config = c
 		}
 	}
-	if sasl := source.SASL; sasl != nil {
-		switch *sasl.Mechanism {
-		case dfv1.SASLTypeGSSAPI:
-			if gssapi := sasl.GSSAPI; gssapi != nil {
-				config.Net.SASL.Enable = true
-				config.Net.SASL.Mechanism = sarama.SASLTypeGSSAPI
-				if gssapi, err := sharedutil.GetGSSAPIConfig(gssapi); err != nil {
-					return nil, fmt.Errorf("error loading gssapi config, %w", err)
-				} else {
-					config.Net.SASL.GSSAPI = *gssapi
-				}
-			}
-		case dfv1.SASLTypePlaintext:
-			if plain := sasl.Plain; plain != nil {
-				config.Net.SASL.Enable = true
-				config.Net.SASL.Mechanism = sarama.SASLTypePlaintext
-				config.Net.SASL.User = plain.User
-				if plain.PasswordSecret != nil {
-					password, err := sharedutil.GetSecretFromVolume(plain.PasswordSecret)
-					if err != nil {
-						return nil, err
-					} else {
-						config.Net.SASL.Password = password
-					}
-				}
-				config.Net.SASL.Handshake = plain.Handshake
-			}
-		default:
-			return nil, fmt.Errorf("SASL mechanism not supported: %s", *sasl.Mechanism)
+	if s := source.SASL; s != nil {
+		if sasl, err := sharedutil.GetSASL(s); err != nil {
+			return nil, err
+		} else {
+			config.Net.SASL = *sasl
 		}
 	}
 	kafkasource.config = config
@@ -426,7 +410,7 @@ func toReadMessage(m *sarama.ConsumerMessage) *isb.ReadMessage {
 		Header: isb.Header{
 			MessageInfo: isb.MessageInfo{EventTime: m.Timestamp},
 			ID:          offset,
-			Key:         string(m.Key),
+			Keys:        []string{string(m.Key)},
 		},
 		Body: isb.Body{Payload: m.Value},
 	}

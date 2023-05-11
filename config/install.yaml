@@ -2504,12 +2504,23 @@ spec:
                   properties:
                     conditions:
                       properties:
-                        keyIn:
-                          items:
-                            type: string
-                          type: array
+                        tags:
+                          properties:
+                            operator:
+                              enum:
+                              - and
+                              - or
+                              - not
+                              type: string
+                            values:
+                              items:
+                                type: string
+                              type: array
+                          required:
+                          - values
+                          type: object
                       required:
-                      - keyIn
+                      - tags
                       type: object
                     from:
                       type: string
@@ -6112,6 +6123,101 @@ spec:
                               type: array
                             config:
                               type: string
+                            sasl:
+                              properties:
+                                gssapi:
+                                  properties:
+                                    authType:
+                                      type: string
+                                    kerberosConfigSecret:
+                                      properties:
+                                        key:
+                                          type: string
+                                        name:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                      required:
+                                      - key
+                                      type: object
+                                    keytabSecret:
+                                      properties:
+                                        key:
+                                          type: string
+                                        name:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                      required:
+                                      - key
+                                      type: object
+                                    passwordSecret:
+                                      properties:
+                                        key:
+                                          type: string
+                                        name:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                      required:
+                                      - key
+                                      type: object
+                                    realm:
+                                      type: string
+                                    serviceName:
+                                      type: string
+                                    usernameSecret:
+                                      properties:
+                                        key:
+                                          type: string
+                                        name:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                      required:
+                                      - key
+                                      type: object
+                                  required:
+                                  - authType
+                                  - realm
+                                  - serviceName
+                                  - usernameSecret
+                                  type: object
+                                mechanism:
+                                  type: string
+                                plain:
+                                  properties:
+                                    handshake:
+                                      type: boolean
+                                    passwordSecret:
+                                      properties:
+                                        key:
+                                          type: string
+                                        name:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                      required:
+                                      - key
+                                      type: object
+                                    userSecret:
+                                      properties:
+                                        key:
+                                          type: string
+                                        name:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                      required:
+                                      - key
+                                      type: object
+                                  required:
+                                  - handshake
+                                  - userSecret
+                                  type: object
+                              required:
+                              - mechanism
+                              type: object
                             tls:
                               properties:
                                 caCertSecret:
@@ -6453,13 +6559,22 @@ spec:
                                       type: string
                                     serviceName:
                                       type: string
-                                    username:
-                                      type: string
+                                    usernameSecret:
+                                      properties:
+                                        key:
+                                          type: string
+                                        name:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                      required:
+                                      - key
+                                      type: object
                                   required:
                                   - authType
                                   - realm
                                   - serviceName
-                                  - username
+                                  - usernameSecret
                                   type: object
                                 mechanism:
                                   type: string
@@ -6478,11 +6593,20 @@ spec:
                                       required:
                                       - key
                                       type: object
-                                    user:
-                                      type: string
+                                    userSecret:
+                                      properties:
+                                        key:
+                                          type: string
+                                        name:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                      required:
+                                      - key
+                                      type: object
                                   required:
                                   - handshake
-                                  - user
+                                  - userSecret
                                   type: object
                               required:
                               - mechanism
@@ -7164,6 +7288,8 @@ spec:
                           type: object
                         groupBy:
                           properties:
+                            allowedLateness:
+                              type: string
                             keyed:
                               type: boolean
                             storage:
@@ -8583,12 +8709,23 @@ spec:
                   properties:
                     conditions:
                       properties:
-                        keyIn:
-                          items:
-                            type: string
-                          type: array
+                        tags:
+                          properties:
+                            operator:
+                              enum:
+                              - and
+                              - or
+                              - not
+                              type: string
+                            values:
+                              items:
+                                type: string
+                              type: array
+                          required:
+                          - values
+                          type: object
                       required:
-                      - keyIn
+                      - tags
                       type: object
                     from:
                       type: string
@@ -10113,6 +10250,101 @@ spec:
                         type: array
                       config:
                         type: string
+                      sasl:
+                        properties:
+                          gssapi:
+                            properties:
+                              authType:
+                                type: string
+                              kerberosConfigSecret:
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                              keytabSecret:
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                              passwordSecret:
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                              realm:
+                                type: string
+                              serviceName:
+                                type: string
+                              usernameSecret:
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                            required:
+                            - authType
+                            - realm
+                            - serviceName
+                            - usernameSecret
+                            type: object
+                          mechanism:
+                            type: string
+                          plain:
+                            properties:
+                              handshake:
+                                type: boolean
+                              passwordSecret:
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                              userSecret:
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
+                            required:
+                            - handshake
+                            - userSecret
+                            type: object
+                        required:
+                        - mechanism
+                        type: object
                       tls:
                         properties:
                           caCertSecret:
@@ -10454,13 +10686,22 @@ spec:
                                 type: string
                               serviceName:
                                 type: string
-                              username:
-                                type: string
+                              usernameSecret:
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
                             required:
                             - authType
                             - realm
                             - serviceName
-                            - username
+                            - usernameSecret
                             type: object
                           mechanism:
                             type: string
@@ -10479,11 +10720,20 @@ spec:
                                 required:
                                 - key
                                 type: object
-                              user:
-                                type: string
+                              userSecret:
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    type: boolean
+                                required:
+                                - key
+                                type: object
                             required:
                             - handshake
-                            - user
+                            - userSecret
                             type: object
                         required:
                         - mechanism
@@ -10936,12 +11186,23 @@ spec:
                   properties:
                     conditions:
                       properties:
-                        keyIn:
-                          items:
-                            type: string
-                          type: array
+                        tags:
+                          properties:
+                            operator:
+                              enum:
+                              - and
+                              - or
+                              - not
+                              type: string
+                            values:
+                              items:
+                                type: string
+                              type: array
+                          required:
+                          - values
+                          type: object
                       required:
-                      - keyIn
+                      - tags
                       type: object
                     from:
                       type: string
@@ -11203,6 +11464,8 @@ spec:
                     type: object
                   groupBy:
                     properties:
+                      allowedLateness:
+                        type: string
                       keyed:
                         type: boolean
                       storage:
@@ -12276,27 +12539,26 @@ data:
             min-replicas-to-write 1
             # Disable RDB persistence, AOF persistence already enabled.
             save ""
-            maxmemory 512mb
-            maxmemory-policy allkeys-lru
-          # Special config only used by master
-          master: |
-            appendonly no
-          # Special config only used by replicas
-          replica: |
             # Enable AOF https://redis.io/topics/persistence#append-only-file
             appendonly yes
             auto-aof-rewrite-percentage 100
             auto-aof-rewrite-min-size 64mb
+            maxmemory 512mb
+            maxmemory-policy allkeys-lru
+          # Special config only used by master
+          master: ""
+          # Special config only used by replicas
+          replica: ""
           # Sentinel config
           sentinel: |
             sentinel down-after-milliseconds mymaster 10000
             sentinel failover-timeout mymaster 2000
             sentinel parallel-syncs mymaster 1
         versions:
-        - version: 6.2.6
-          redisImage: bitnami/redis:6.2.6-debian-10-r97
-          sentinelImage: bitnami/redis-sentinel:6.2.6-debian-10-r95
-          redisExporterImage: bitnami/redis-exporter:1.33.0-debian-10-r21
+        - version: 7.0.11
+          redisImage: bitnami/redis:7.0.11-debian-11-r3
+          sentinelImage: bitnami/redis-sentinel:7.0.11-debian-11-r3
+          redisExporterImage: bitnami/redis-exporter:1.50.0-debian-11-r4
           initContainerImage: debian:latest
       jetstream:
         # Default JetStream settings, could be overridden by InterStepBufferService specs
@@ -12499,7 +12761,7 @@ spec:
         imagePullPolicy: Always
         livenessProbe:
           httpGet:
-            path: /healthz
+            path: /livez
             port: 8443
             scheme: HTTPS
           initialDelaySeconds: 3

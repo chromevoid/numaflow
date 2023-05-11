@@ -23,7 +23,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
@@ -50,7 +50,8 @@ func BuildTestWriteMessages(count int64, startTime time.Time) []isb.Message {
 					MessageInfo: isb.MessageInfo{
 						EventTime: tmpTime,
 					},
-					ID: fmt.Sprintf("%d", i),
+					ID:   fmt.Sprintf("%d", i),
+					Keys: []string{},
 				},
 				Body: isb.Body{Payload: result},
 			},

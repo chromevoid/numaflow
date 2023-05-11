@@ -17714,14 +17714,12 @@
     "io.numaproj.numaflow.v1alpha1.ForwardConditions": {
       "type": "object",
       "required": [
-        "keyIn"
+        "tags"
       ],
       "properties": {
-        "keyIn": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+        "tags": {
+          "description": "Tags used to specify tags for conditional forwarding",
+          "$ref": "#/definitions/io.numaproj.numaflow.v1alpha1.TagConditions"
         }
       }
     },
@@ -17754,7 +17752,7 @@
       "required": [
         "serviceName",
         "realm",
-        "username",
+        "usernameSecret",
         "authType"
       ],
       "properties": {
@@ -17780,8 +17778,9 @@
         "serviceName": {
           "type": "string"
         },
-        "username": {
-          "type": "string"
+        "usernameSecret": {
+          "description": "UsernameSecret refers to the secret that contains the username",
+          "$ref": "#/definitions/io.k8s.api.core.v1.SecretKeySelector"
         }
       }
     },
@@ -18072,6 +18071,10 @@
         "window"
       ],
       "properties": {
+        "allowedLateness": {
+          "description": "AllowedLateness allows late data to be included for the Reduce operation as long as the late data is not later than (Watermark - AllowedLateness).",
+          "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.Duration"
+        },
         "keyed": {
           "type": "boolean"
         },
@@ -18214,7 +18217,7 @@
           "type": "string"
         },
         "encryption": {
-          "description": "Whether encrypt the data at rest, defaults to false Enabling encryption might impact the performance, see https://docs.nats.io/running-a-nats-service/nats_admin/jetstream_admin/encryption_at_rest for the detail Toggling the value will impact encypting/decrypting existing messages.",
+          "description": "Whether encrypt the data at rest, defaults to false Enabling encryption might impact the performance, see https://docs.nats.io/running-a-nats-service/nats_admin/jetstream_admin/encryption_at_rest for the detail Toggling the value will impact encrypting/decrypting existing messages.",
           "type": "boolean"
         },
         "imagePullSecrets": {
@@ -18417,6 +18420,10 @@
         },
         "config": {
           "type": "string"
+        },
+        "sasl": {
+          "description": "SASL user to configure SASL connection for kafka broker SASL.enable=true default for SASL.",
+          "$ref": "#/definitions/io.numaproj.numaflow.v1alpha1.SASL"
         },
         "tls": {
           "description": "TLS user to configure TLS connection for kafka broker TLS.enable=true default for TLS.",
@@ -18699,12 +18706,12 @@
       "type": "object",
       "properties": {
         "bufferMaxLength": {
-          "description": "BufferMaxLength is used to define the max length of a buffer Only applies to UDF and Source vertice as only they do buffer write. It can be overridden by the settings in vertex limits.",
+          "description": "BufferMaxLength is used to define the max length of a buffer Only applies to UDF and Source vertices as only they do buffer write. It can be overridden by the settings in vertex limits.",
           "type": "integer",
           "format": "int64"
         },
         "bufferUsageLimit": {
-          "description": "BufferUsageLimit is used to define the percentage of the buffer usage limit, a valid value should be less than 100, for example, 85. Only applies to UDF and Source vertice as only they do buffer write. It will be overridden by the settings in vertex limits.",
+          "description": "BufferUsageLimit is used to define the percentage of the buffer usage limit, a valid value should be less than 100, for example, 85. Only applies to UDF and Source vertices as only they do buffer write. It will be overridden by the settings in vertex limits.",
           "type": "integer",
           "format": "int64"
         },
@@ -18955,7 +18962,7 @@
     "io.numaproj.numaflow.v1alpha1.SASLPlain": {
       "type": "object",
       "required": [
-        "user",
+        "userSecret",
         "handshake"
       ],
       "properties": {
@@ -18966,8 +18973,9 @@
           "description": "PasswordSecret refers to the secret that contains the password",
           "$ref": "#/definitions/io.k8s.api.core.v1.SecretKeySelector"
         },
-        "user": {
-          "type": "string"
+        "userSecret": {
+          "description": "UserSecret refers to the secret that contains the user",
+          "$ref": "#/definitions/io.k8s.api.core.v1.SecretKeySelector"
         }
       }
     },
@@ -19110,6 +19118,25 @@
         },
         "insecureSkipVerify": {
           "type": "boolean"
+        }
+      }
+    },
+    "io.numaproj.numaflow.v1alpha1.TagConditions": {
+      "type": "object",
+      "required": [
+        "values"
+      ],
+      "properties": {
+        "operator": {
+          "description": "Operator specifies the type of operation that should be used for conditional forwarding value could be \"and\", \"or\", \"not\"",
+          "type": "string"
+        },
+        "values": {
+          "description": "Values tag values for conditional forwarding",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },

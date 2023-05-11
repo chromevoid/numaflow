@@ -28,8 +28,8 @@ import (
 	"github.com/numaproj/numaflow/pkg/forward"
 	"github.com/numaproj/numaflow/pkg/watermark/generic"
 
-	"github.com/go-redis/redis/v8"
 	"github.com/montanaflynn/stats"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 
@@ -291,11 +291,11 @@ type ReadWritePerformance struct {
 type forwardReadWritePerformance struct {
 }
 
-func (f forwardReadWritePerformance) WhereTo(_ string) ([]string, error) {
+func (f forwardReadWritePerformance) WhereTo(_ []string, _ []string) ([]string, error) {
 	return []string{"to1"}, nil
 }
 
-func (f forwardReadWritePerformance) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.Message, error) {
+func (f forwardReadWritePerformance) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.WriteMessage, error) {
 	return testutils.CopyUDFTestApply(ctx, message)
 }
 

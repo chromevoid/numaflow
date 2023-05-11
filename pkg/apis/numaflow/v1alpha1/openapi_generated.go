@@ -89,6 +89,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.Source":                         schema_pkg_apis_numaflow_v1alpha1_Source(ref),
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.Status":                         schema_pkg_apis_numaflow_v1alpha1_Status(ref),
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.TLS":                            schema_pkg_apis_numaflow_v1alpha1_TLS(ref),
+		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.TagConditions":                  schema_pkg_apis_numaflow_v1alpha1_TagConditions(ref),
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.Templates":                      schema_pkg_apis_numaflow_v1alpha1_Templates(ref),
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.Transformer":                    schema_pkg_apis_numaflow_v1alpha1_Transformer(ref),
 		"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.UDF":                            schema_pkg_apis_numaflow_v1alpha1_UDF(ref),
@@ -988,24 +989,18 @@ func schema_pkg_apis_numaflow_v1alpha1_ForwardConditions(ref common.ReferenceCal
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
 				Properties: map[string]spec.Schema{
-					"keyIn": {
+					"tags": {
 						SchemaProps: spec.SchemaProps{
-							Type: []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
-									},
-								},
-							},
+							Description: "Tags used to specify tags for conditional forwarding",
+							Ref:         ref("github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.TagConditions"),
 						},
 					},
 				},
-				Required: []string{"keyIn"},
+				Required: []string{"tags"},
 			},
 		},
+		Dependencies: []string{
+			"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.TagConditions"},
 	}
 }
 
@@ -1079,11 +1074,10 @@ func schema_pkg_apis_numaflow_v1alpha1_GSSAPI(ref common.ReferenceCallback) comm
 							Format:  "",
 						},
 					},
-					"username": {
+					"usernameSecret": {
 						SchemaProps: spec.SchemaProps{
-							Default: "",
-							Type:    []string{"string"},
-							Format:  "",
+							Description: "UsernameSecret refers to the secret that contains the username",
+							Ref:         ref("k8s.io/api/core/v1.SecretKeySelector"),
 						},
 					},
 					"authType": {
@@ -1112,7 +1106,7 @@ func schema_pkg_apis_numaflow_v1alpha1_GSSAPI(ref common.ReferenceCallback) comm
 						},
 					},
 				},
-				Required: []string{"serviceName", "realm", "username", "authType"},
+				Required: []string{"serviceName", "realm", "usernameSecret", "authType"},
 			},
 		},
 		Dependencies: []string{
@@ -1628,6 +1622,12 @@ func schema_pkg_apis_numaflow_v1alpha1_GroupBy(ref common.ReferenceCallback) com
 							Format:  "",
 						},
 					},
+					"allowedLateness": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AllowedLateness allows late data to be included for the Reduce operation as long as the late data is not later than (Watermark - AllowedLateness).",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
 					"storage": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Storage is used to define the PBQ storage for a reduce vertex.",
@@ -1639,7 +1639,7 @@ func schema_pkg_apis_numaflow_v1alpha1_GroupBy(ref common.ReferenceCallback) com
 			},
 		},
 		Dependencies: []string{
-			"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.PBQStorage", "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.Window"},
+			"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.PBQStorage", "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.Window", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration"},
 	}
 }
 
@@ -2038,7 +2038,7 @@ func schema_pkg_apis_numaflow_v1alpha1_JetStreamBufferService(ref common.Referen
 					},
 					"encryption": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Whether encrypt the data at rest, defaults to false Enabling encryption might impact the performance, see https://docs.nats.io/running-a-nats-service/nats_admin/jetstream_admin/encryption_at_rest for the detail Toggling the value will impact encypting/decrypting existing messages.",
+							Description: "Whether encrypt the data at rest, defaults to false Enabling encryption might impact the performance, see https://docs.nats.io/running-a-nats-service/nats_admin/jetstream_admin/encryption_at_rest for the detail Toggling the value will impact encrypting/decrypting existing messages.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
@@ -2285,12 +2285,18 @@ func schema_pkg_apis_numaflow_v1alpha1_KafkaSink(ref common.ReferenceCallback) c
 							Format: "",
 						},
 					},
+					"sasl": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SASL user to configure SASL connection for kafka broker SASL.enable=true default for SASL.",
+							Ref:         ref("github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.SASL"),
+						},
+					},
 				},
 				Required: []string{"topic"},
 			},
 		},
 		Dependencies: []string{
-			"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.TLS"},
+			"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.SASL", "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1.TLS"},
 	}
 }
 
@@ -2816,14 +2822,14 @@ func schema_pkg_apis_numaflow_v1alpha1_PipelineLimits(ref common.ReferenceCallba
 					},
 					"bufferMaxLength": {
 						SchemaProps: spec.SchemaProps{
-							Description: "BufferMaxLength is used to define the max length of a buffer Only applies to UDF and Source vertice as only they do buffer write. It can be overridden by the settings in vertex limits.",
+							Description: "BufferMaxLength is used to define the max length of a buffer Only applies to UDF and Source vertices as only they do buffer write. It can be overridden by the settings in vertex limits.",
 							Type:        []string{"integer"},
 							Format:      "int64",
 						},
 					},
 					"bufferUsageLimit": {
 						SchemaProps: spec.SchemaProps{
-							Description: "BufferUsageLimit is used to define the percentage of the buffer usage limit, a valid value should be less than 100, for example, 85. Only applies to UDF and Source vertice as only they do buffer write. It will be overridden by the settings in vertex limits.",
+							Description: "BufferUsageLimit is used to define the percentage of the buffer usage limit, a valid value should be less than 100, for example, 85. Only applies to UDF and Source vertices as only they do buffer write. It will be overridden by the settings in vertex limits.",
 							Type:        []string{"integer"},
 							Format:      "int64",
 						},
@@ -3287,11 +3293,10 @@ func schema_pkg_apis_numaflow_v1alpha1_SASLPlain(ref common.ReferenceCallback) c
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
 				Properties: map[string]spec.Schema{
-					"user": {
+					"userSecret": {
 						SchemaProps: spec.SchemaProps{
-							Default: "",
-							Type:    []string{"string"},
-							Format:  "",
+							Description: "UserSecret refers to the secret that contains the user",
+							Ref:         ref("k8s.io/api/core/v1.SecretKeySelector"),
 						},
 					},
 					"passwordSecret": {
@@ -3308,7 +3313,7 @@ func schema_pkg_apis_numaflow_v1alpha1_SASLPlain(ref common.ReferenceCallback) c
 						},
 					},
 				},
-				Required: []string{"user", "handshake"},
+				Required: []string{"userSecret", "handshake"},
 			},
 		},
 		Dependencies: []string{
@@ -3572,6 +3577,41 @@ func schema_pkg_apis_numaflow_v1alpha1_TLS(ref common.ReferenceCallback) common.
 		},
 		Dependencies: []string{
 			"k8s.io/api/core/v1.SecretKeySelector"},
+	}
+}
+
+func schema_pkg_apis_numaflow_v1alpha1_TagConditions(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"operator": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Operator specifies the type of operation that should be used for conditional forwarding value could be \"and\", \"or\", \"not\"",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"values": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Values tag values for conditional forwarding",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"values"},
+			},
+		},
 	}
 }
 

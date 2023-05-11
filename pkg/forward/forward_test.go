@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/goleak"
+
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/isb/stores/simplebuffer"
@@ -63,6 +65,10 @@ func (t *testForwardFetcher) Close() error {
 	return nil
 }
 
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
+
 // GetWatermark uses current time as the watermark because we want to make sure
 // the test publisher is publishing watermark
 func (t *testForwardFetcher) GetWatermark(_ isb.Offset) wmb.Watermark {
@@ -82,11 +88,11 @@ func (t *testForwardFetcher) GetHeadWMB() wmb.WMB {
 type myForwardTest struct {
 }
 
-func (f myForwardTest) WhereTo(_ string) ([]string, error) {
+func (f myForwardTest) WhereTo(_ []string, _ []string) ([]string, error) {
 	return []string{"to1"}, nil
 }
 
-func (f myForwardTest) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.Message, error) {
+func (f myForwardTest) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.WriteMessage, error) {
 	return testutils.CopyUDFTestApply(ctx, message)
 }
 
@@ -509,7 +515,7 @@ func TestNewInterStepDataForwardIdleWatermark_Reset(t *testing.T) {
 type mySourceForwardTest struct {
 }
 
-func (f mySourceForwardTest) WhereTo(_ string) ([]string, error) {
+func (f mySourceForwardTest) WhereTo(_ []string, _ []string) ([]string, error) {
 	return []string{"to1"}, nil
 }
 
@@ -517,8 +523,8 @@ func (f mySourceForwardTest) WhereTo(_ string) ([]string, error) {
 // such that we can verify message IsLate attribute gets set to true.
 var testSourceNewEventTime = testSourceWatermark.Add(time.Duration(-1) * time.Minute)
 
-func (f mySourceForwardTest) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.Message, error) {
-	return func(ctx context.Context, readMessage *isb.ReadMessage) ([]*isb.Message, error) {
+func (f mySourceForwardTest) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.WriteMessage, error) {
+	return func(ctx context.Context, readMessage *isb.ReadMessage) ([]*isb.WriteMessage, error) {
 		_ = ctx
 		offset := readMessage.ReadOffset
 		payload := readMessage.Body.Payload
@@ -530,19 +536,19 @@ func (f mySourceForwardTest) ApplyMap(ctx context.Context, message *isb.ReadMess
 		result := payload
 		// assign new event time
 		parentPaneInfo.EventTime = testSourceNewEventTime
-		var key string
+		var key []string
 
-		writeMessage := &isb.Message{
+		writeMessage := isb.Message{
 			Header: isb.Header{
 				MessageInfo: parentPaneInfo,
 				ID:          offset.String(),
-				Key:         key,
+				Keys:        key,
 			},
 			Body: isb.Body{
 				Payload: result,
 			},
 		}
-		return []*isb.Message{writeMessage}, nil
+		return []*isb.WriteMessage{{Message: writeMessage}}, nil
 	}(ctx, message)
 }
 
@@ -595,7 +601,7 @@ func TestSourceInterStepDataForward(t *testing.T) {
 	readMessages, err := to1.Read(ctx, count)
 	assert.NoError(t, err, "expected no error")
 	assert.Len(t, readMessages, int(count))
-	assert.Equal(t, []interface{}{writeMessages[0].Header.Key, writeMessages[1].Header.Key}, []interface{}{readMessages[0].Header.Key, readMessages[1].Header.Key})
+	assert.Equal(t, []interface{}{writeMessages[0].Header.Keys, writeMessages[1].Header.Keys}, []interface{}{readMessages[0].Header.Keys, readMessages[1].Header.Keys})
 	assert.Equal(t, []interface{}{writeMessages[0].Header.ID, writeMessages[1].Header.ID}, []interface{}{readMessages[0].Header.ID, readMessages[1].Header.ID})
 	for _, m := range readMessages {
 		// verify new event time gets assigned to messages.
@@ -769,11 +775,11 @@ func TestNewInterStepDataForwardToOneStep(t *testing.T) {
 type myForwardDropTest struct {
 }
 
-func (f myForwardDropTest) WhereTo(_ string) ([]string, error) {
-	return []string{dfv1.MessageKeyDrop}, nil
+func (f myForwardDropTest) WhereTo(_ []string, _ []string) ([]string, error) {
+	return []string{}, nil
 }
 
-func (f myForwardDropTest) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.Message, error) {
+func (f myForwardDropTest) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.WriteMessage, error) {
 	return testutils.CopyUDFTestApply(ctx, message)
 }
 
@@ -877,11 +883,11 @@ func TestNewInterStepDataForward_dropAll(t *testing.T) {
 type myForwardToAllTest struct {
 }
 
-func (f myForwardToAllTest) WhereTo(_ string) ([]string, error) {
-	return []string{dfv1.MessageKeyAll}, nil
+func (f myForwardToAllTest) WhereTo(_ []string, _ []string) ([]string, error) {
+	return []string{"to1", "to2"}, nil
 }
 
-func (f myForwardToAllTest) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.Message, error) {
+func (f myForwardToAllTest) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.WriteMessage, error) {
 	return testutils.CopyUDFTestApply(ctx, message)
 }
 
@@ -971,11 +977,11 @@ func TestNewInterStepData_forwardToAll(t *testing.T) {
 type myForwardInternalErrTest struct {
 }
 
-func (f myForwardInternalErrTest) WhereTo(_ string) ([]string, error) {
+func (f myForwardInternalErrTest) WhereTo(_ []string, _ []string) ([]string, error) {
 	return []string{"to1"}, nil
 }
 
-func (f myForwardInternalErrTest) ApplyMap(_ context.Context, _ *isb.ReadMessage) ([]*isb.Message, error) {
+func (f myForwardInternalErrTest) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.WriteMessage, error) {
 	return nil, udfapplier.ApplyUDFErr{
 		UserUDFErr: false,
 		InternalErr: struct {
@@ -1023,11 +1029,11 @@ func TestNewInterStepDataForward_WithInternalError(t *testing.T) {
 type myForwardApplyWhereToErrTest struct {
 }
 
-func (f myForwardApplyWhereToErrTest) WhereTo(_ string) ([]string, error) {
+func (f myForwardApplyWhereToErrTest) WhereTo(_ []string, _ []string) ([]string, error) {
 	return []string{"to1"}, fmt.Errorf("whereToStep failed")
 }
 
-func (f myForwardApplyWhereToErrTest) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.Message, error) {
+func (f myForwardApplyWhereToErrTest) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.WriteMessage, error) {
 	return testutils.CopyUDFTestApply(ctx, message)
 }
 
@@ -1070,11 +1076,11 @@ func TestNewInterStepDataForward_WhereToError(t *testing.T) {
 type myForwardApplyUDFErrTest struct {
 }
 
-func (f myForwardApplyUDFErrTest) WhereTo(_ string) ([]string, error) {
+func (f myForwardApplyUDFErrTest) WhereTo(_ []string, _ []string) ([]string, error) {
 	return []string{"to1"}, nil
 }
 
-func (f myForwardApplyUDFErrTest) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.Message, error) {
+func (f myForwardApplyUDFErrTest) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.WriteMessage, error) {
 	return nil, fmt.Errorf("UDF error")
 }
 
@@ -1085,10 +1091,6 @@ func TestNewInterStepDataForward_UDFError(t *testing.T) {
 	toSteps := map[string]isb.BufferWriter{
 		"to1": to1,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
-
-	writeMessages := testutils.BuildTestWriteMessages(int64(20), testStartTime)
 
 	vertex := &dfv1.Vertex{Spec: dfv1.VertexSpec{
 		PipelineName: "testPipeline",
@@ -1097,16 +1099,21 @@ func TestNewInterStepDataForward_UDFError(t *testing.T) {
 		},
 	}}
 
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+
+	writeMessages := testutils.BuildTestWriteMessages(int64(20), testStartTime)
+
 	fetchWatermark, publishWatermark := generic.BuildNoOpWatermarkProgressorsFromBufferMap(toSteps)
 	f, err := NewInterStepDataForward(vertex, fromStep, toSteps, myForwardApplyUDFErrTest{}, myForwardApplyUDFErrTest{}, fetchWatermark, publishWatermark, WithReadBatchSize(2))
 	assert.NoError(t, err)
+	assert.False(t, to1.IsFull())
 	assert.True(t, to1.IsEmpty())
 
 	stopped := f.Start()
 	// write some data
 	_, errs := fromStep.Write(ctx, writeMessages[0:5])
 	assert.Equal(t, make([]error, 5), errs)
-
 	assert.True(t, to1.IsEmpty())
 
 	f.Stop()

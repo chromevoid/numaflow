@@ -1060,9 +1060,14 @@ Description
 <tbody>
 <tr>
 <td>
-<code>keyIn</code></br> <em> \[\]string </em>
+<code>tags</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.TagConditions"> TagConditions
+</a> </em>
 </td>
 <td>
+<p>
+Tags used to specify tags for conditional forwarding
+</p>
 </td>
 </tr>
 </tbody>
@@ -1153,9 +1158,14 @@ Description
 </tr>
 <tr>
 <td>
-<code>username</code></br> <em> string </em>
+<code>usernameSecret</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#secretkeyselector-v1-core">
+Kubernetes core/v1.SecretKeySelector </a> </em>
 </td>
 <td>
+<p>
+UsernameSecret refers to the secret that contains the username
+</p>
 </td>
 </tr>
 <tr>
@@ -1770,6 +1780,21 @@ Window describes the windowing strategy.
 </tr>
 <tr>
 <td>
+<code>allowedLateness</code></br> <em>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
+Kubernetes meta/v1.Duration </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+AllowedLateness allows late data to be included for the Reduce operation
+as long as the late data is not later than (Watermark -
+AllowedLateness).
+</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>storage</code></br> <em>
 <a href="#numaflow.numaproj.io/v1alpha1.PBQStorage"> PBQStorage </a>
 </em>
@@ -2193,7 +2218,7 @@ fields under “otBucket” include “maxValueSize”, “history”, “ttl”
 Whether encrypt the data at rest, defaults to false Enabling encryption
 might impact the performance, see
 <a href="https://docs.nats.io/running-a-nats-service/nats_admin/jetstream_admin/encryption_at_rest">https://docs.nats.io/running-a-nats-service/nats_admin/jetstream_admin/encryption_at_rest</a>
-for the detail Toggling the value will impact encypting/decrypting
+for the detail Toggling the value will impact encrypting/decrypting
 existing messages.
 </p>
 </td>
@@ -2419,6 +2444,19 @@ default for TLS.
 <em>(Optional)</em>
 </td>
 </tr>
+<tr>
+<td>
+<code>sasl</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.SASL"> SASL </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+SASL user to configure SASL connection for kafka broker SASL.enable=true
+default for SASL.
+</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="numaflow.numaproj.io/v1alpha1.KafkaSource">
@@ -2553,6 +2591,16 @@ Log
 <p>
 (<em>Appears on:</em>
 <a href="#numaflow.numaproj.io/v1alpha1.Sink">Sink</a>)
+</p>
+<p>
+</p>
+<h3 id="numaflow.numaproj.io/v1alpha1.LogicOperator">
+LogicOperator (<code>string</code> alias)
+</p>
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.TagConditions">TagConditions</a>)
 </p>
 <p>
 </p>
@@ -3150,7 +3198,7 @@ by the vertex’s limit settings
 <em>(Optional)</em>
 <p>
 BufferMaxLength is used to define the max length of a buffer Only
-applies to UDF and Source vertice as only they do buffer write. It can
+applies to UDF and Source vertices as only they do buffer write. It can
 be overridden by the settings in vertex limits.
 </p>
 </td>
@@ -3164,7 +3212,7 @@ be overridden by the settings in vertex limits.
 <p>
 BufferUsageLimit is used to define the percentage of the buffer usage
 limit, a valid value should be less than 100, for example, 85. Only
-applies to UDF and Source vertice as only they do buffer write. It will
+applies to UDF and Source vertices as only they do buffer write. It will
 be overridden by the settings in vertex limits.
 </p>
 </td>
@@ -3676,6 +3724,7 @@ SASL
 </h3>
 <p>
 (<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.KafkaSink">KafkaSink</a>,
 <a href="#numaflow.numaproj.io/v1alpha1.KafkaSource">KafkaSource</a>)
 </p>
 <p>
@@ -3752,9 +3801,14 @@ Description
 <tbody>
 <tr>
 <td>
-<code>user</code></br> <em> string </em>
+<code>userSecret</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#secretkeyselector-v1-core">
+Kubernetes core/v1.SecretKeySelector </a> </em>
 </td>
 <td>
+<p>
+UserSecret refers to the secret that contains the user
+</p>
 </td>
 </tr>
 <tr>
@@ -4236,6 +4290,53 @@ Kubernetes core/v1.SecretKeySelector </a> </em>
 <em>(Optional)</em>
 <p>
 KeySecret refers to the secret that contains the key
+</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="numaflow.numaproj.io/v1alpha1.TagConditions">
+TagConditions
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.ForwardConditions">ForwardConditions</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>operator</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.LogicOperator"> LogicOperator
+</a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Operator specifies the type of operation that should be used for
+conditional forwarding value could be “and”, “or”, “not”
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>values</code></br> <em> \[\]string </em>
+</td>
+<td>
+<p>
+Values tag values for conditional forwarding
 </p>
 </td>
 </tr>

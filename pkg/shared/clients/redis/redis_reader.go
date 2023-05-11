@@ -21,8 +21,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/go-redis/redis/v8"
 	"github.com/numaproj/numaflow/pkg/isb"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
 
@@ -42,14 +42,15 @@ type RedisStreamsRead struct {
 }
 
 type Metrics struct {
-	ReadErrorsInc MetricsIncrementFunc
-	ReadsAdd      MetricsAddFunc
-	AcksAdd       MetricsAddFunc
+	ReadErrorsInc metricsIncrementFunc
+	ReadsAdd      metricsAddFunc // number of actual messages read in
+	AcksAdd       metricsAddFunc
+	AckErrorsAdd  metricsAddFunc
 }
 
 // need a function type which increments a particular counter
-type MetricsIncrementFunc func()
-type MetricsAddFunc func(int)
+type metricsIncrementFunc func()
+type metricsAddFunc func(int)
 
 func (br *RedisStreamsRead) GetName() string {
 	return br.Name
@@ -72,6 +73,7 @@ func (br *RedisStreamsRead) Read(_ context.Context, count int64) ([]*isb.ReadMes
 	var messages = make([]*isb.ReadMessage, 0, count)
 	var xstreams []redis.XStream
 	var err error
+
 	// start with 0-0 if CheckBackLog is true
 	labels := map[string]string{"buffer": br.GetName()}
 	if br.Options.CheckBackLog {
@@ -94,11 +96,14 @@ func (br *RedisStreamsRead) Read(_ context.Context, count int64) ([]*isb.ReadMes
 		}
 	}
 
-	// for each XMessage in []XStream
-	msgs, err := br.XStreamToMessages(xstreams, messages, labels)
-	if br.Metrics.ReadsAdd != nil {
-		br.Metrics.ReadsAdd(len(messages))
+	// Update metric for number of messages read in
+	for _, xstream := range xstreams {
+		if br.Metrics.ReadsAdd != nil {
+			br.Metrics.ReadsAdd(len(xstream.Messages))
+		}
 	}
+	// Generate messages from the XStream
+	msgs, err := br.XStreamToMessages(xstreams, messages, labels)
 	br.Log.Debugf("Received %d messages over Redis Streams Source, err=%v", len(msgs), err)
 	return msgs, err
 }
@@ -122,19 +127,50 @@ func (br *RedisStreamsRead) processReadError(xstreams []redis.XStream, messages 
 // send array of 1 element.
 func (br *RedisStreamsRead) Ack(_ context.Context, offsets []isb.Offset) []error {
 	errs := make([]error, len(offsets))
+	// if we were to have n messages produced from 1 incoming message, we could have
+	// the same offset more than once: just in case, we can deduplicate
+	dedupOffsets := make(map[string]struct{}) // essentially a Set
 	strOffsets := []string{}
 	for _, o := range offsets {
-		strOffsets = append(strOffsets, o.String())
+		_, found := dedupOffsets[o.String()]
+		if !found {
+			dedupOffsets[o.String()] = struct{}{}
+			strOffsets = append(strOffsets, o.String())
+		}
 	}
 	if err := br.Client.XAck(RedisContext, br.Stream, br.Group, strOffsets...).Err(); err != nil {
 		for i := 0; i < len(offsets); i++ {
-			errs[i] = err
+			errs[i] = err // 'errs' is indexed the same as 'offsets'
+		}
+		if br.Metrics.AckErrorsAdd != nil {
+			br.Metrics.AckErrorsAdd(len(strOffsets))
+		}
+	} else {
+		if br.Metrics.AcksAdd != nil {
+			br.Metrics.AcksAdd(len(strOffsets))
 		}
 	}
-	if br.Metrics.AcksAdd != nil {
-		br.Metrics.AcksAdd(len(offsets))
-	}
 	return errs
+}
+
+func (br *RedisStreamsRead) NoAck(_ context.Context, _ []isb.Offset) {}
+
+func (br *RedisStreamsRead) Pending(_ context.Context) (int64, error) {
+	// try calling XINFO GROUPS <stream> and look for 'Lag' key.
+	// For Redis Server < v7.0, this always returns 0; therefore it's recommended to use >= v7.0
+
+	result := br.Client.XInfoGroups(RedisContext, br.Stream)
+	groups, err := result.Result()
+	if err != nil {
+		return isb.PendingNotAvailable, fmt.Errorf("error calling XInfoGroups: %v", err)
+	}
+	// find our ConsumerGroup
+	for _, group := range groups {
+		if group.Name == br.Group {
+			return group.Lag, nil
+		}
+	}
+	return isb.PendingNotAvailable, fmt.Errorf("ConsumerGroup %q not found in XInfoGroups result %+v", br.Group, groups)
 }
 
 // processXReadResult is used to process the results of XREADGROUP

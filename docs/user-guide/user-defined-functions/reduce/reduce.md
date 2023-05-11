@@ -19,7 +19,7 @@ powerful functions can be applied using this reduce semantics.
 
 ```python
 # reduceFn func is a generic reduce function that processes a set of elements
-def reduceFn(key: str, datums: Iterator[Datum], md: Metadata) -> Messages:
+def reduceFn(keys: List[str], datums: Iterator[Datum], md: Metadata) -> Messages:
     # initialize_accumalor could be any function that starts of with an empty
     # state. eg, accumulator = 0
     accumulator = initialize_accumalor()
@@ -30,7 +30,7 @@ def reduceFn(key: str, datums: Iterator[Datum], md: Metadata) -> Messages:
         accumulator.add_input(d)
     # once we are done with iterating on the elements, we return the result
     # acumulator.result() can be str.encode(accumulator)
-    return Messages(Message.to_vtx(key, acumulator.result()))
+    return Messages(Message(acumulator.result(), keys))
 ```
 
 ## Specification
@@ -84,6 +84,21 @@ So for the example above, the value of the watermark will be set to the last tim
 
 This applies to all the window types regardless of whether they are keyed or non-keyed windows. 
 
+## Allowed Lateness
+
+`allowedLateness` flag on the Reduce vertex will allow late data to be 
+processed by slowing the down the close-of-book operation of the Reduce vertex. Late data will be included for
+the Reduce operation as long as the late data is not later than `(CurrentWatermark - AllowedLateness)`. 
+Without `allowedLateness`, late data will be rejected and dropped. Each Reduce vertex can have its own `allowedLateness`.
+
+```yaml
+vertices:
+  - name: my-udf
+    udf:
+      groupBy:
+        allowedLateness: 5s # Optional, allowedLateness is disabled by default
+```
+
 ## Storage
 
 Reduce unlike map requires persistence. To support persistence user has to define the 
@@ -103,7 +118,7 @@ vertices:
 
 `persistentVolumeClaim` supports the following fields, `volumeSize`, `storageClassName`, and`accessMode`.
 As name suggests,`volumeSize` specifies the size of the volume. `accessMode` can be of many types, but for 
-reduce usecase we need only `ReadWriteOnce`. `storageClassName` can also be provided, more info on storage class
+reduce use case we need only `ReadWriteOnce`. `storageClassName` can also be provided, more info on storage class
 can be found [here](https://kubernetes.io/docs/concepts/storage/persistent-volumes#class-1). The default
 value of `storageClassName` is `default` which is default StorageClass may be deployed to a Kubernetes 
 cluster by addon manager during installation.

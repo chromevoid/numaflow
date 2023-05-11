@@ -26,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/isb/stores/simplebuffer"
@@ -39,7 +41,6 @@ import (
 	"github.com/numaproj/numaflow/pkg/watermark/store/inmem"
 	"github.com/numaproj/numaflow/pkg/watermark/wmb"
 	"github.com/numaproj/numaflow/pkg/window/strategy/fixed"
-	"github.com/stretchr/testify/assert"
 )
 
 var keyedVertex = &dfv1.VertexInstance{
@@ -113,7 +114,7 @@ type CounterReduceTest struct {
 }
 
 // Reduce returns a result with the count of messages
-func (f CounterReduceTest) ApplyReduce(_ context.Context, partitionID *partition.ID, messageStream <-chan *isb.ReadMessage) ([]*isb.Message, error) {
+func (f CounterReduceTest) ApplyReduce(_ context.Context, partitionID *partition.ID, messageStream <-chan *isb.ReadMessage) ([]*isb.WriteMessage, error) {
 	count := 0
 	for range messageStream {
 		count += 1
@@ -121,53 +122,60 @@ func (f CounterReduceTest) ApplyReduce(_ context.Context, partitionID *partition
 
 	payload := PayloadForTest{Key: "count", Value: count}
 	b, _ := json.Marshal(payload)
-	ret := &isb.Message{
+	ret := isb.Message{
 		Header: isb.Header{
 			MessageInfo: isb.MessageInfo{
 				EventTime: partitionID.End,
 			},
-			ID:  "msgID",
-			Key: "result",
+			ID:   "msgID",
+			Keys: []string{"result"},
 		},
 		Body: isb.Body{Payload: b},
 	}
-	return []*isb.Message{
-		ret,
+	return []*isb.WriteMessage{
+		{
+			Message: ret,
+			Tags:    nil,
+		},
 	}, nil
 }
 
-func (f CounterReduceTest) WhereTo(_ string) ([]string, error) {
+func (f CounterReduceTest) WhereTo(_ []string, _ []string) ([]string, error) {
 	return []string{"reduce-to-buffer"}, nil
 }
 
 type SumReduceTest struct {
 }
 
-func (s SumReduceTest) ApplyReduce(_ context.Context, partitionID *partition.ID, messageStream <-chan *isb.ReadMessage) ([]*isb.Message, error) {
+func (s SumReduceTest) ApplyReduce(ctx context.Context, partitionID *partition.ID, messageStream <-chan *isb.ReadMessage) ([]*isb.WriteMessage, error) {
 	sums := make(map[string]int)
 
 	for msg := range messageStream {
 		var payload PayloadForTest
 		_ = json.Unmarshal(msg.Payload, &payload)
-		key := msg.Key
-		sums[key] += payload.Value
+		key := msg.Keys
+		sums[key[0]] += payload.Value
 	}
 
-	msgs := make([]*isb.Message, 0)
+	msgs := make([]*isb.WriteMessage, 0)
 
 	for k, s := range sums {
 		payload := PayloadForTest{Key: k, Value: s}
 		b, _ := json.Marshal(payload)
-		msg := &isb.Message{
-			Header: isb.Header{
-				MessageInfo: isb.MessageInfo{
-					EventTime: partitionID.End,
+		msg := &isb.WriteMessage{
+			Message: isb.Message{
+				Header: isb.Header{
+					MessageInfo: isb.MessageInfo{
+						EventTime: partitionID.End,
+					},
+					ID:   "msgID",
+					Keys: []string{k},
 				},
-				ID:  "msgID",
-				Key: k,
+				Body: isb.Body{Payload: b},
 			},
-			Body: isb.Body{Payload: b},
+			Tags: nil,
 		}
+
 		msgs = append(msgs, msg)
 	}
 
@@ -177,34 +185,37 @@ func (s SumReduceTest) ApplyReduce(_ context.Context, partitionID *partition.ID,
 type MaxReduceTest struct {
 }
 
-func (m MaxReduceTest) ApplyReduce(_ context.Context, partitionID *partition.ID, messageStream <-chan *isb.ReadMessage) ([]*isb.Message, error) {
+func (m MaxReduceTest) ApplyReduce(ctx context.Context, partitionID *partition.ID, messageStream <-chan *isb.ReadMessage) ([]*isb.WriteMessage, error) {
 	mx := math.MinInt64
 	maxMap := make(map[string]int)
 	for msg := range messageStream {
 		var payload PayloadForTest
 		_ = json.Unmarshal(msg.Payload, &payload)
-		if max, ok := maxMap[msg.Key]; ok {
+		if max, ok := maxMap[msg.Keys[0]]; ok {
 			mx = max
 		}
 		if payload.Value > mx {
 			mx = payload.Value
-			maxMap[msg.Key] = mx
+			maxMap[msg.Keys[0]] = mx
 		}
 	}
 
-	result := make([]*isb.Message, 0)
+	result := make([]*isb.WriteMessage, 0)
 	for k, max := range maxMap {
 		payload := PayloadForTest{Key: k, Value: max}
 		b, _ := json.Marshal(payload)
-		ret := &isb.Message{
-			Header: isb.Header{
-				MessageInfo: isb.MessageInfo{
-					EventTime: partitionID.End,
+		ret := &isb.WriteMessage{
+			Message: isb.Message{
+				Header: isb.Header{
+					MessageInfo: isb.MessageInfo{
+						EventTime: partitionID.End,
+					},
+					ID:   "msgID",
+					Keys: []string{k},
 				},
-				ID:  "msgID",
-				Key: k,
+				Body: isb.Body{Payload: b},
 			},
-			Body: isb.Body{Payload: b},
+			Tags: nil,
 		}
 
 		result = append(result, ret)
@@ -453,7 +464,6 @@ func TestReduceDataForward_IdleWM(t *testing.T) {
 			MessageInfo: isb.MessageInfo{},
 			Kind:        0,
 			ID:          "",
-			Key:         "",
 		}, msgs[i].Header)
 	}
 
@@ -468,7 +478,7 @@ func TestReduceDataForward_IdleWM(t *testing.T) {
 	assert.Equal(t, isb.WMB, msgs[0].Kind)
 	// the second message should be the data message from the closed window above
 	// in the test ApplyUDF above we've set the final message to have key="result"
-	for msgs[1].Key != "result" {
+	for len(msgs[1].Keys) == 0 {
 		select {
 		case <-ctx.Done():
 			if ctx.Err() == context.DeadlineExceeded {
@@ -497,7 +507,6 @@ func TestReduceDataForward_IdleWM(t *testing.T) {
 			MessageInfo: isb.MessageInfo{},
 			Kind:        0,
 			ID:          "",
-			Key:         "",
 		}, msgs[i].Header)
 	}
 
@@ -506,7 +515,7 @@ func TestReduceDataForward_IdleWM(t *testing.T) {
 // Count operation with 1 min window
 func TestReduceDataForward_Count(t *testing.T) {
 	var (
-		ctx, cancel    = context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel    = context.WithTimeout(context.Background(), 10*time.Second)
 		fromBufferSize = int64(100000)
 		toBufferSize   = int64(10)
 		messageValue   = []int{7}
@@ -552,17 +561,6 @@ func TestReduceDataForward_Count(t *testing.T) {
 	// start the producer
 	go publishMessages(ctx, startTime, messageValue, 300, 10, p, fromBuffer)
 
-	// wait until there is data in to buffer
-	for buffer.IsEmpty() {
-		select {
-		case <-ctx.Done():
-			assert.Fail(t, ctx.Err().Error())
-			return
-		default:
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-
 	// we are reading only one message here but the count should be equal to
 	// the number of keyed windows that closed
 	msgs, readErr := buffer.Read(ctx, 1)
@@ -585,13 +583,88 @@ func TestReduceDataForward_Count(t *testing.T) {
 	// since the window duration is 60s and tps is 1, the count should be 60
 	assert.Equal(t, int64(60), int64(readMessagePayload.Value))
 	assert.Equal(t, "count", readMessagePayload.Key)
+}
 
+func TestReduceDataForward_AllowedLatencyCount(t *testing.T) {
+	var (
+		ctx, cancel    = context.WithTimeout(context.Background(), 10*time.Second)
+		batchSize      = 1
+		fromBufferSize = int64(100000)
+		toBufferSize   = int64(10)
+		messageValue   = 7
+		startTime      = 60000 // time in millis
+		fromBufferName = "source-reduce-buffer"
+		toBufferName   = "reduce-to-buffer"
+		pipelineName   = "test-reduce-pipeline"
+		err            error
+	)
+
+	defer cancel()
+
+	// create from buffers
+	fromBuffer := simplebuffer.NewInMemoryBuffer(fromBufferName, fromBufferSize)
+
+	// create to buffers
+	buffer := simplebuffer.NewInMemoryBuffer(toBufferName, toBufferSize)
+	toBuffer := map[string]isb.BufferWriter{
+		toBufferName: buffer,
+	}
+
+	// create pbq manager
+	var pbqManager *pbq.Manager
+	pbqManager, err = pbq.NewManager(ctx, "reduce", pipelineName, 0, memory.NewMemoryStores(memory.WithStoreSize(1000)),
+		pbq.WithReadTimeout(1*time.Second), pbq.WithChannelBufferSize(10))
+	assert.NoError(t, err)
+
+	// create in memory watermark publisher and fetcher
+	f, p := fetcherAndPublisher(ctx, fromBuffer, t.Name())
+	publisherMap, _ := buildPublisherMapAndOTStore(ctx, toBuffer, pipelineName)
+
+	// create a fixed window of 10s
+	window := fixed.NewFixed(5 * time.Second)
+
+	var reduceDataForward *DataForward
+	allowedLatency := 1000
+	reduceDataForward, err = NewDataForward(ctx, CounterReduceTest{}, keyedVertex, fromBuffer, toBuffer, pbqManager, CounterReduceTest{}, f, publisherMap,
+		window, WithReadBatchSize(int64(batchSize)),
+		WithAllowedLateness(time.Duration(allowedLatency)*time.Millisecond),
+	)
+	assert.NoError(t, err)
+
+	// start the forwarder
+	go reduceDataForward.Start()
+
+	// start the producer
+	go publishMessagesAllowedLatency(ctx, startTime, messageValue, allowedLatency, 5, batchSize, p, fromBuffer)
+
+	// we are reading only one message here but the count should be equal to
+	// the number of keyed windows that closed
+	msgs, readErr := buffer.Read(ctx, 1)
+	assert.Nil(t, readErr)
+	for len(msgs) == 0 || msgs[0].Header.Kind == isb.WMB {
+		select {
+		case <-ctx.Done():
+			assert.Fail(t, ctx.Err().Error())
+			return
+		default:
+			time.Sleep(100 * time.Millisecond)
+			msgs, readErr = buffer.Read(ctx, 1)
+			assert.Nil(t, readErr)
+		}
+	}
+
+	// assert the output of reduce
+	var readMessagePayload PayloadForTest
+	_ = json.Unmarshal(msgs[0].Payload, &readMessagePayload)
+	// without allowedLatency the value would be 4
+	assert.Equal(t, int64(5), int64(readMessagePayload.Value))
+	assert.Equal(t, "count", readMessagePayload.Key)
 }
 
 // Sum operation with 2 minutes window
 func TestReduceDataForward_Sum(t *testing.T) {
 	var (
-		ctx, cancel    = context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel    = context.WithTimeout(context.Background(), 10*time.Second)
 		fromBufferSize = int64(100000)
 		toBufferSize   = int64(10)
 		messageValue   = []int{10}
@@ -636,17 +709,6 @@ func TestReduceDataForward_Sum(t *testing.T) {
 	// start the producer
 	go publishMessages(ctx, startTime, messageValue, 300, 10, p, fromBuffer)
 
-	// wait until there is data in to buffer
-	for buffer.IsEmpty() {
-		select {
-		case <-ctx.Done():
-			assert.Fail(t, ctx.Err().Error())
-			return
-		default:
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-
 	// we are reading only one message here but the count should be equal to
 	// the number of keyed windows that closed
 	msgs, readErr := buffer.Read(ctx, 1)
@@ -675,7 +737,7 @@ func TestReduceDataForward_Sum(t *testing.T) {
 // Max operation with 5 minutes window
 func TestReduceDataForward_Max(t *testing.T) {
 	var (
-		ctx, cancel    = context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel    = context.WithTimeout(context.Background(), 10*time.Second)
 		fromBufferSize = int64(100000)
 		toBufferSize   = int64(10)
 		messageValue   = []int{100}
@@ -720,17 +782,6 @@ func TestReduceDataForward_Max(t *testing.T) {
 
 	// start the producer
 	go publishMessages(ctx, startTime, messageValue, 600, 10, p, fromBuffer)
-
-	// wait until there is data in to buffer
-	for buffer.IsEmpty() {
-		select {
-		case <-ctx.Done():
-			assert.Fail(t, ctx.Err().Error())
-			return
-		default:
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
 
 	// we are reading only one message here but the count should be equal to
 	// the number of keyed windows that closed
@@ -807,17 +858,6 @@ func TestReduceDataForward_SumWithDifferentKeys(t *testing.T) {
 	// start the forwarder
 	go reduceDataForward.Start()
 
-	// wait until there is data in to buffer
-	for buffer.IsEmpty() {
-		select {
-		case <-ctx.Done():
-			assert.Fail(t, ctx.Err().Error())
-			return
-		default:
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-
 	msgs0, readErr := buffer.Read(ctx, 1)
 	assert.Nil(t, readErr)
 	for len(msgs0) == 0 || msgs0[0].Header.Kind == isb.WMB {
@@ -865,7 +905,7 @@ func TestReduceDataForward_SumWithDifferentKeys(t *testing.T) {
 // Max operation with 5 minutes window and non keyed
 func TestReduceDataForward_NonKeyed(t *testing.T) {
 	var (
-		ctx, cancel    = context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel    = context.WithTimeout(context.Background(), 10*time.Second)
 		fromBufferSize = int64(100000)
 		toBufferSize   = int64(10)
 		messages       = []int{100, 99}
@@ -911,17 +951,6 @@ func TestReduceDataForward_NonKeyed(t *testing.T) {
 	// start the producer
 	go publishMessages(ctx, startTime, messages, 600, 10, p, fromBuffer)
 
-	// wait until there is data in to buffer
-	for buffer.IsEmpty() {
-		select {
-		case <-ctx.Done():
-			assert.Fail(t, ctx.Err().Error())
-			return
-		default:
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-
 	// we are reading only one message here but the count should be equal to
 	// the number of keyed windows that closed
 	msgs, readErr := buffer.Read(ctx, 1)
@@ -951,7 +980,7 @@ func TestReduceDataForward_NonKeyed(t *testing.T) {
 
 func TestDataForward_WithContextClose(t *testing.T) {
 	var (
-		ctx, cancel    = context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel    = context.WithTimeout(context.Background(), 10*time.Second)
 		fromBufferSize = int64(100000)
 		toBufferSize   = int64(10)
 		messages       = []int{100, 99}
@@ -1082,11 +1111,24 @@ func buildPublisherMapAndOTStore(ctx context.Context, toBuffers map[string]isb.B
 	// create publisher for to Buffers
 	for key := range toBuffers {
 		publishEntity := processor.NewProcessorEntity(key)
-		hb, _, _ := inmem.NewKVInMemKVStore(ctx, pipelineName, key+"_PROCESSORS")
-		ot, _, _ := inmem.NewKVInMemKVStore(ctx, pipelineName, key+"_OT")
+		hb, hbKVEntry, _ := inmem.NewKVInMemKVStore(ctx, pipelineName, key+"_PROCESSORS")
+		ot, otKVEntry, _ := inmem.NewKVInMemKVStore(ctx, pipelineName, key+"_OT")
 		otStores[key] = ot
 		p := publish.NewPublish(ctx, publishEntity, wmstore.BuildWatermarkStore(hb, ot), publish.WithAutoRefreshHeartbeatDisabled(), publish.WithPodHeartbeatRate(1))
 		publishers[key] = p
+
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-hbKVEntry:
+					// do nothing... just to consume the toBuffer hbBucket
+				case <-otKVEntry:
+					// do nothing... just to consume the toBuffer otBucket
+				}
+			}
+		}()
 	}
 	return publishers, otStores
 }
@@ -1104,8 +1146,8 @@ func buildMessagesForReduce(count int, key string, publishTime time.Time) []isb.
 				MessageInfo: isb.MessageInfo{
 					EventTime: publishTime,
 				},
-				ID:  fmt.Sprintf("%d", i),
-				Key: key,
+				ID:   fmt.Sprintf("%d", i),
+				Keys: []string{key},
 			},
 			Body: isb.Body{Payload: result},
 		}
@@ -1176,15 +1218,15 @@ func publishMessages(ctx context.Context, startTime int, messages []int, testDur
 }
 
 func buildIsbMessage(messageValue int, eventTime time.Time) isb.Message {
-	var messageKey string
+	var messageKey []string
 	if messageValue%2 == 0 {
-		messageKey = "even"
+		messageKey = []string{"even"}
 	} else {
-		messageKey = "odd"
+		messageKey = []string{"odd"}
 	}
 
 	result, _ := json.Marshal(PayloadForTest{
-		Key:   messageKey,
+		Key:   messageKey[0],
 		Value: messageValue,
 	})
 	return isb.Message{
@@ -1192,8 +1234,95 @@ func buildIsbMessage(messageValue int, eventTime time.Time) isb.Message {
 			MessageInfo: isb.MessageInfo{
 				EventTime: eventTime,
 			},
-			ID:  fmt.Sprintf("%d", messageValue),
-			Key: messageKey,
+			ID:   fmt.Sprintf("%d", messageValue),
+			Keys: messageKey,
+		},
+		Body: isb.Body{Payload: result},
+	}
+}
+
+// publishMessagesAllowedLatency is only used for xxxAllowedLatency test
+func publishMessagesAllowedLatency(ctx context.Context, startTime int, message int, allowedLatency int, windowSize int, batchSize int, publish publish.Publisher, fromBuffer *simplebuffer.InMemoryBuffer) {
+	counter := 0
+	inputMsgs := make([]isb.Message, batchSize)
+	for i := 0; i <= windowSize; i++ {
+		// to simulate real usage
+		time.Sleep(time.Second)
+		et := startTime + i*1000
+		// normal cases, eventTime = watermark
+		wm := wmb.Watermark(time.UnixMilli(int64(et)))
+		inputMsg := buildIsbMessage(message, time.UnixMilli(int64(et)))
+		if i == windowSize-1 {
+			// et is now (window.EndTime - 1000)
+			et = et + 1000
+			// set wm to be the window.EndTime
+			// because we've set allowedLatency, so COB is not triggered
+			wm = wmb.Watermark(time.UnixMilli(int64(et)))
+			// set the eventTime = wm
+			inputMsg = buildIsbMessage(message, time.UnixMilli(int64(et)))
+		}
+		if i == windowSize {
+			// et is now window.EndTime
+			// set wm to be the window.EndTime + allowedLatency to trigger COB
+			wm = wmb.Watermark(time.UnixMilli(int64(et + allowedLatency)))
+			// set message eventTime to still be inside the window
+			// so the eventTime is now smaller than wm, the message isLate is set to true
+			et = et - 100
+			inputMsg = buildIsbMessageAllowedLatency(message, time.UnixMilli(int64(et)))
+		}
+		inputMsgs[counter] = inputMsg
+		counter += 1
+
+		if counter >= batchSize {
+			offsets, _ := fromBuffer.Write(ctx, inputMsgs)
+			if len(offsets) > 0 {
+				publish.PublishWatermark(wm, offsets[len(offsets)-1])
+			}
+			counter = 0
+		}
+	}
+
+	// dummy messages to
+	//  - start a new window
+	//  - make sure readloop can
+	//    read a message,
+	//    get the `6000000` watermark,
+	//    and close the first window.
+	// COB won't happen for this window
+	// will exit early when the test is done
+	for i := 0; i <= 10; i++ {
+		// to simulate real usage
+		time.Sleep(time.Second)
+		et := 6000000 + i
+		wm := wmb.Watermark(time.UnixMilli(int64(et)))
+		inputMsgs = []isb.Message{buildIsbMessage(message, time.UnixMilli(int64(et)))}
+		offsets, _ := fromBuffer.Write(ctx, inputMsgs)
+		if len(offsets) > 0 {
+			publish.PublishWatermark(wm, offsets[len(offsets)-1])
+		}
+	}
+}
+
+func buildIsbMessageAllowedLatency(messageValue int, eventTime time.Time) isb.Message {
+	var messageKey []string
+	if messageValue%2 == 0 {
+		messageKey = []string{"even"}
+	} else {
+		messageKey = []string{"odd"}
+	}
+
+	result, _ := json.Marshal(PayloadForTest{
+		Key:   messageKey[0],
+		Value: messageValue,
+	})
+	return isb.Message{
+		Header: isb.Header{
+			MessageInfo: isb.MessageInfo{
+				EventTime: eventTime,
+				IsLate:    true,
+			},
+			ID:   fmt.Sprintf("%d", messageValue),
+			Keys: messageKey,
 		},
 		Body: isb.Body{Payload: result},
 	}

@@ -40,15 +40,18 @@ nav:
       - quick-start.md
   - User Guide:
       - Core Concepts:
-          - user-guide/pipeline.md
-          - user-guide/vertex.md
-          - user-guide/inter-step-buffer.md
-          - user-guide/inter-step-buffer-service.md
+          - core-concepts/pipeline.md
+          - core-concepts/vertex.md
+          - core-concepts/inter-step-buffer.md
+          - core-concepts/inter-step-buffer-service.md
+          - core-concepts/watermarks.md
       - Sources:
+          - Overview: "user-guide/sources/overview.md"
           - user-guide/sources/generator.md
           - user-guide/sources/http.md
           - user-guide/sources/kafka.md
           - user-guide/sources/nats.md
+          - user-guide/sources/redis-source.md
           - Data Transformer:
               - Overview: "user-guide/sources/transformer/overview.md"
               - Built-in Transformers:
@@ -56,6 +59,7 @@ nav:
                   - Filter: "user-guide/sources/transformer/builtin-transformers/filter.md"
                   - Event Time Extractor: "user-guide/sources/transformer/builtin-transformers/event-time-extractor.md"
       - Sinks:
+          - Overview: "user-guide/sinks/overview.md"
           - user-guide/sinks/kafka.md
           - user-guide/sinks/log.md
           - user-guide/sinks/blackhole.md
@@ -75,19 +79,20 @@ nav:
                   - Fixed: "user-guide/user-defined-functions/reduce/windowing/fixed.md"
                   - Sliding: "user-guide/user-defined-functions/reduce/windowing/sliding.md"
               - Examples: "user-guide/user-defined-functions/reduce/examples.md"
-      - user-guide/pipeline-tuning.md
-      - user-guide/conditional-forwarding.md
-      - user-guide/autoscaling.md
-      - user-guide/container-resources.md
-      - user-guide/volumes.md
-      - user-guide/environment-variables.md
-      - user-guide/labels-and-annotations.md
-      - user-guide/init-containers.md
-      - user-guide/sidecar-containers.md
-      - user-guide/pipeline-customization.md
-      - user-guide/watermarks.md
-      - user-guide/kustomize/kustomize.md
-      - APIs.md
+      - Reference:
+          - user-guide/reference/pipeline-tuning.md
+          - user-guide/reference/autoscaling.md
+          - user-guide/reference/conditional-forwarding.md
+          - Configuration:              
+            - user-guide/reference/configuration/container-resources.md
+            - user-guide/reference/configuration/volumes.md
+            - user-guide/reference/configuration/environment-variables.md
+            - user-guide/reference/configuration/labels-and-annotations.md
+            - user-guide/reference/configuration/init-containers.md
+            - user-guide/reference/configuration/sidecar-containers.md
+            - user-guide/reference/configuration/pipeline-customization.md
+          - user-guide/reference/kustomize/kustomize.md
+          - APIs.md
   - Operator Manual:
       - Releases ⧉: "operations/releases.md"
       - operations/installation.md
@@ -95,13 +100,13 @@ nav:
           - Controller Configuration: "operations/controller-configmap.md"
           - operations/metrics/metrics.md
           - operations/grafana.md
-  - Developer Guide:
+  - Contributor Guide:
       - development/development.md
       - Specifications:
           - Overview: "specifications/overview.md"
           - specifications/controllers.md
           - specifications/autoscaling.md
-          - specifications/edges-and-buffers.md
+          - Edges, Buffers and Buckets: "specifications/edges-buffers-buckets.md"
       - development/debugging.md
       - development/static-code-analysis.md
       - development/releasing.md

@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
@@ -261,6 +261,7 @@ func (br *BufferRead) setError(errMsg string, err error) {
 	br.BufferReadInfo.refreshEmptyError.Inc()
 	br.setIsEmptyFlag(false)
 }
+
 func (br *BufferRead) Pending(_ context.Context) (int64, error) {
 	// TODO: not implemented
 	return isb.PendingNotAvailable, nil

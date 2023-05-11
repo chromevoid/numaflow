@@ -305,7 +305,8 @@ message FixedWindow {
 }
 
 message ForwardConditions {
-  repeated string keyIn = 1;
+  // Tags used to specify tags for conditional forwarding
+  optional TagConditions tags = 1;
 }
 
 message Function {
@@ -325,7 +326,8 @@ message GSSAPI {
 
   optional string realm = 2;
 
-  optional string username = 3;
+  // UsernameSecret refers to the secret that contains the username
+  optional k8s.io.api.core.v1.SecretKeySelector usernameSecret = 3;
 
   // valid inputs - KRB5_USER_AUTH, KRB5_KEYTAB_AUTH
   optional string authType = 4;
@@ -474,8 +476,13 @@ message GroupBy {
   // +optional
   optional bool keyed = 2;
 
+  // AllowedLateness allows late data to be included for the Reduce operation as long as the late data is not later
+  // than (Watermark - AllowedLateness).
+  // +optional
+  optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration allowedLateness = 3;
+
   // Storage is used to define the PBQ storage for a reduce vertex.
-  optional PBQStorage storage = 3;
+  optional PBQStorage storage = 4;
 }
 
 message HTTPSource {
@@ -580,7 +587,7 @@ message JetStreamBufferService {
 
   // Whether encrypt the data at rest, defaults to false
   // Enabling encryption might impact the performance, see https://docs.nats.io/running-a-nats-service/nats_admin/jetstream_admin/encryption_at_rest for the detail
-  // Toggling the value will impact encypting/decrypting existing messages.
+  // Toggling the value will impact encrypting/decrypting existing messages.
   // +optional
   optional bool encryption = 11;
 
@@ -640,6 +647,11 @@ message KafkaSink {
 
   // +optional
   optional string config = 4;
+
+  // SASL user to configure SASL connection for kafka broker
+  // SASL.enable=true default for SASL.
+  // +optional
+  optional SASL sasl = 5;
 }
 
 message KafkaSource {
@@ -806,14 +818,14 @@ message PipelineLimits {
   optional uint64 readBatchSize = 1;
 
   // BufferMaxLength is used to define the max length of a buffer
-  // Only applies to UDF and Source vertice as only they do buffer write.
+  // Only applies to UDF and Source vertices as only they do buffer write.
   // It can be overridden by the settings in vertex limits.
   // +kubebuilder:default=30000
   // +optional
   optional uint64 bufferMaxLength = 2;
 
   // BufferUsageLimit is used to define the percentage of the buffer usage limit, a valid value should be less than 100, for example, 85.
-  // Only applies to UDF and Source vertice as only they do buffer write.
+  // Only applies to UDF and Source vertices as only they do buffer write.
   // It will be overridden by the settings in vertex limits.
   // +kubebuilder:default=80
   // +optional
@@ -963,7 +975,8 @@ message SASL {
 }
 
 message SASLPlain {
-  optional string user = 1;
+  // UserSecret refers to the secret that contains the user
+  optional k8s.io.api.core.v1.SecretKeySelector userSecret = 1;
 
   // PasswordSecret refers to the secret that contains the password
   // +optional
@@ -1085,6 +1098,17 @@ message TLS {
   // KeySecret refers to the secret that contains the key
   // +optional
   optional k8s.io.api.core.v1.SecretKeySelector keySecret = 4;
+}
+
+message TagConditions {
+  // Operator specifies the type of operation that should be used for conditional forwarding
+  // value could be "and", "or", "not"
+  // +kubebuilder:validation:Enum=and;or;not
+  // +optional
+  optional string operator = 1;
+
+  // Values tag values for conditional forwarding
+  repeated string values = 2;
 }
 
 message Templates {

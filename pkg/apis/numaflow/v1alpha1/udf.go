@@ -24,6 +24,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 type Function struct {
@@ -95,7 +96,20 @@ func (in UDF) getUDFContainer(mainContainerReq getContainerReq) corev1.Container
 			c = c.imagePullPolicy(*x.ImagePullPolicy)
 		}
 	}
-	return c.build()
+	container := c.build()
+	container.LivenessProbe = &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path:   "/sidecar-livez",
+				Port:   intstr.FromInt(VertexMetricsPort),
+				Scheme: corev1.URISchemeHTTPS,
+			},
+		},
+		InitialDelaySeconds: 30,
+		PeriodSeconds:       60,
+		TimeoutSeconds:      30,
+	}
+	return container
 }
 
 // GroupBy indicates it is a reducer UDF
@@ -104,8 +118,12 @@ type GroupBy struct {
 	Window Window `json:"window" protobuf:"bytes,1,opt,name=window"`
 	// +optional
 	Keyed bool `json:"keyed" protobuf:"bytes,2,opt,name=keyed"`
+	// AllowedLateness allows late data to be included for the Reduce operation as long as the late data is not later
+	// than (Watermark - AllowedLateness).
+	// +optional
+	AllowedLateness *metav1.Duration `json:"allowedLateness,omitempty" protobuf:"bytes,3,opt,name=allowedLateness"`
 	// Storage is used to define the PBQ storage for a reduce vertex.
-	Storage *PBQStorage `json:"storage,omitempty" protobuf:"bytes,3,opt,name=storage"`
+	Storage *PBQStorage `json:"storage,omitempty" protobuf:"bytes,4,opt,name=storage"`
 }
 
 // Window describes windowing strategy

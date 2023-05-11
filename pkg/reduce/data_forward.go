@@ -84,7 +84,8 @@ func NewDataForward(ctx context.Context,
 	idleManager := wmb.NewIdleManager(len(toBuffers))
 
 	rl, err := readloop.NewReadLoop(ctx, vertexInstance.Vertex.Spec.Name, vertexInstance.Vertex.Spec.PipelineName,
-		vertexInstance.Replica, udf, pbqManager, windowingStrategy, toBuffers, whereToDecider, watermarkPublishers, idleManager)
+		vertexInstance.Replica, udf, pbqManager, windowingStrategy, toBuffers, whereToDecider, watermarkPublishers,
+		idleManager, options.allowedLateness)
 
 	df := &DataForward{
 		ctx:                 ctx,
@@ -225,8 +226,8 @@ func (d *DataForward) forwardAChunk(ctx context.Context) {
 	processorWM := d.watermarkFetcher.GetWatermark(readMessages[0].ReadOffset)
 	for _, m := range readMessages {
 		if !d.keyed {
-			m.Key = dfv1.DefaultKeyForNonKeyedData
-			m.Message.Key = dfv1.DefaultKeyForNonKeyedData
+			m.Keys = []string{dfv1.DefaultKeyForNonKeyedData}
+			m.Message.Keys = []string{dfv1.DefaultKeyForNonKeyedData}
 		}
 		m.Watermark = time.Time(processorWM)
 		totalBytes += len(m.Payload)
