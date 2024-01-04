@@ -445,7 +445,7 @@ func toReadMessage(m *sarama.ConsumerMessage) *isb.ReadMessage {
 		},
 		Body: isb.Body{Payload: ed},
 	}
-	fmt.Println("data", ed)
+	fmt.Println("data", string(ed))
 
 	return &isb.ReadMessage{
 		ReadOffset: readOffset,
