@@ -436,9 +436,9 @@ func toReadMessage(m *sarama.ConsumerMessage) *isb.ReadMessage {
 		Header: isb.Header{
 			MessageInfo: isb.MessageInfo{EventTime: m.Timestamp},
 			ID:          readOffset.String(),
-			Keys:        []string{string(decoded)},
+			Keys:        []string{string(m.Key)},
 		},
-		Body: isb.Body{Payload: m.Value},
+		Body: isb.Body{Payload: decoded},
 	}
 
 	return &isb.ReadMessage{
