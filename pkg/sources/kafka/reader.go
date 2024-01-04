@@ -18,7 +18,7 @@ package kafka
 
 import (
 	"context"
-	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -426,7 +426,12 @@ func (r *kafkaSource) startConsumer() {
 }
 
 func toReadMessage(m *sarama.ConsumerMessage) *isb.ReadMessage {
-	decoded, _ := base64.StdEncoding.DecodeString(string(m.Value))
+	var unmarshalled wireFormat
+	err := json.Unmarshal(m.Value, &unmarshalled)
+	if err != nil {
+		panic("wrong")
+	}
+	ed := unmarshalled.EncryptedData
 	readOffset := &kafkaOffset{
 		offset:       m.Offset,
 		partitionIdx: m.Partition,
@@ -438,12 +443,29 @@ func toReadMessage(m *sarama.ConsumerMessage) *isb.ReadMessage {
 			ID:          readOffset.String(),
 			Keys:        []string{string(m.Key)},
 		},
-		Body: isb.Body{Payload: decoded},
+		Body: isb.Body{Payload: ed},
 	}
-	fmt.Println("decoded", decoded)
+	fmt.Println("data", ed)
 
 	return &isb.ReadMessage{
 		ReadOffset: readOffset,
 		Message:    msg,
 	}
+}
+
+type wireFormat struct {
+	// "key":"The Name of the Encryption Key"
+	Key string `json:"key"`
+	// The numeric version of the encryption key
+	KeyVersion int32 `json:"key_version"`
+	// Base 64 encoded encrypted bytes composing the original message
+	EncryptedData []byte `json:"encrypted_data"`
+	// The version of the kafka message format in use
+	ProtocolVersion int32 `json:"protocol_version"`
+	// An arbitrary string(UUID), serves to uniquely identify messages in the system for dedupe and other services
+	Identifier interface{} `json:"identifier"`
+	// The timestamp this message was produced at, in milliseconds from epoch.
+	Timestamp int64 `json:"timestamp"`
+	// The schema using which this event was validated
+	SchemaId string `json:"schema_id"`
 }
