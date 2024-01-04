@@ -426,9 +426,7 @@ func (r *kafkaSource) startConsumer() {
 }
 
 func toReadMessage(m *sarama.ConsumerMessage) *isb.ReadMessage {
-	var decoded []byte
-	_, _ = base64.StdEncoding.Decode(decoded, m.Value)
-	fmt.Println("decoded", string(decoded))
+	decoded, _ := base64.StdEncoding.DecodeString(string(m.Value))
 	readOffset := &kafkaOffset{
 		offset:       m.Offset,
 		partitionIdx: m.Partition,
