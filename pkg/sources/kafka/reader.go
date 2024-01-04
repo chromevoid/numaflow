@@ -440,6 +440,7 @@ func toReadMessage(m *sarama.ConsumerMessage) *isb.ReadMessage {
 		},
 		Body: isb.Body{Payload: decoded},
 	}
+	fmt.Println("decoded", decoded)
 
 	return &isb.ReadMessage{
 		ReadOffset: readOffset,
