@@ -18,6 +18,7 @@ package kafka
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"sync"
 	"time"
@@ -425,6 +426,7 @@ func (r *kafkaSource) startConsumer() {
 }
 
 func toReadMessage(m *sarama.ConsumerMessage) *isb.ReadMessage {
+	decoded, _ := base64.StdEncoding.DecodeString(string(m.Value))
 	readOffset := &kafkaOffset{
 		offset:       m.Offset,
 		partitionIdx: m.Partition,
@@ -434,7 +436,7 @@ func toReadMessage(m *sarama.ConsumerMessage) *isb.ReadMessage {
 		Header: isb.Header{
 			MessageInfo: isb.MessageInfo{EventTime: m.Timestamp},
 			ID:          readOffset.String(),
-			Keys:        []string{string(m.Key)},
+			Keys:        []string{string(decoded)},
 		},
 		Body: isb.Body{Payload: m.Value},
 	}
