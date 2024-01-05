@@ -17,6 +17,7 @@ limitations under the License.
 package kafka
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/IBM/sarama"
@@ -57,6 +58,7 @@ func (consumer *consumerHandler) Setup(sess sarama.ConsumerGroupSession) error {
 func (consumer *consumerHandler) Cleanup(sess sarama.ConsumerGroupSession) error {
 	// wait for inflight acks to be completed.
 	<-consumer.inflightAcks
+	fmt.Println("consumerHandler Cleanup, called sees.Commit()")
 	sess.Commit()
 	return nil
 }
