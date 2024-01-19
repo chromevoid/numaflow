@@ -1,0 +1,48 @@
+apiVersion: numaflow.numaproj.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: test
+spec:
+  watermark:
+    maxDelay: 60s
+    idleSource:
+      threshold: 15s
+      incrementBy: 5s
+      stepInterval: 5s
+  vertices:
+    - name: in
+      scale:
+        min: 1
+      source:
+        generator:
+          rpu: 100
+          duration: 1s
+        transformer:
+          builtin:
+            name: filter
+            kwargs:
+              expression: int(json(payload).id) < 100
+    - name: reduce-sum
+      partitions: 6
+      udf:
+        container:
+          image: quay.io/numaio/numaflow-go/reduce-sum:v0.6.1
+        groupBy:
+          window:
+            fixed:
+              length: 10s
+          keyed: true
+          storage:
+            persistentVolumeClaim:
+              volumeSize: 1Gi
+              accessMode: ReadWriteOnce
+    - name: out
+      scale:
+        min: 1
+      sink:
+        log: {}
+  edges:
+    - from: in
+      to: reduce-sum
+    - from: reduce-sum
+      to: out

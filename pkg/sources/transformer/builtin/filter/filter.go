@@ -23,13 +23,14 @@ import (
 
 	"github.com/numaproj/numaflow-go/pkg/sourcetransformer"
 
-	"github.com/numaproj/numaflow/pkg/shared/expr"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
 )
 
 type filter struct {
 	expression string
 }
+
+var globalCounter = 0
 
 func New(args map[string]string) (sourcetransformer.SourceTransformFunc, error) {
 	expr, existing := args["expression"]
@@ -41,22 +42,20 @@ func New(args map[string]string) (sourcetransformer.SourceTransformFunc, error) 
 	}
 
 	return func(ctx context.Context, keys []string, datum sourcetransformer.Datum) sourcetransformer.Messages {
+		if globalCounter >= len(testData) {
+			globalCounter = 0
+		}
+		keys = testData[globalCounter]
+		globalCounter++
 		log := logging.FromContext(ctx)
 		resultMsg, err := f.apply(datum.EventTime(), datum.Value())
 		if err != nil {
 			log.Errorf("Filter map function apply got an error: %v", err)
 		}
-		return sourcetransformer.MessagesBuilder().Append(resultMsg)
+		return sourcetransformer.MessagesBuilder().Append(resultMsg.WithKeys(keys))
 	}, nil
 }
 
 func (f filter) apply(et time.Time, msg []byte) (sourcetransformer.Message, error) {
-	result, err := expr.EvalBool(f.expression, msg)
-	if err != nil {
-		return sourcetransformer.MessageToDrop(et), err
-	}
-	if result {
-		return sourcetransformer.NewMessage(msg, et), nil
-	}
-	return sourcetransformer.MessageToDrop(et), nil
+	return sourcetransformer.NewMessage(msg, et), nil
 }
