@@ -28,13 +28,14 @@ import (
 
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/isb/testutils"
-	jsclient "github.com/numaproj/numaflow/pkg/shared/clients/nats"
 	natstest "github.com/numaproj/numaflow/pkg/shared/clients/nats/test"
 )
 
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
+
+var defaultPartitionIdx = int32(0)
 
 func TestJetStreamBufferRead(t *testing.T) {
 	s := natstest.RunJetStreamServer(t)
@@ -44,17 +45,15 @@ func TestJetStreamBufferRead(t *testing.T) {
 	defer cancel()
 
 	defaultJetStreamClient := natstest.JetStreamClient(t, s)
-	conn, err := defaultJetStreamClient.Connect(ctx)
-	assert.NoError(t, err)
-	defer conn.Close()
-	js, err := conn.JetStream()
+	defer defaultJetStreamClient.Close()
+	js, err := defaultJetStreamClient.JetStreamContext()
 	assert.NoError(t, err)
 
 	streamName := "testJetStreamBufferReader"
 	addStream(t, js, streamName)
 	defer deleteStream(js, streamName)
 
-	bw, err := NewJetStreamBufferWriter(ctx, defaultJetStreamClient, streamName, streamName, streamName)
+	bw, err := NewJetStreamBufferWriter(ctx, defaultJetStreamClient, streamName, streamName, streamName, defaultPartitionIdx)
 	assert.NoError(t, err)
 	jw, _ := bw.(*jetStreamWriter)
 	defer jw.Close()
@@ -81,7 +80,7 @@ func TestJetStreamBufferRead(t *testing.T) {
 		assert.NoError(t, e)
 	}
 
-	bufferReader, err := NewJetStreamBufferReader(ctx, defaultJetStreamClient, streamName, streamName, streamName)
+	bufferReader, err := NewJetStreamBufferReader(ctx, defaultJetStreamClient, streamName, streamName, streamName, defaultPartitionIdx)
 	assert.NoError(t, err)
 
 	fromStep := bufferReader.(*jetStreamReader)
@@ -100,7 +99,7 @@ func TestJetStreamBufferRead(t *testing.T) {
 	}
 	assert.Equal(t, 20, len(offsetsInsideReadMessages))
 
-	fromStepJs, err := fromStep.conn.JetStream()
+	fromStepJs, err := fromStep.client.JetStreamContext()
 	assert.NoError(t, err)
 	streamInfo, err := fromStepJs.StreamInfo(streamName)
 	assert.NoError(t, err)
@@ -139,17 +138,15 @@ func TestGetName(t *testing.T) {
 	defer cancel()
 
 	defaultJetStreamClient := natstest.JetStreamClient(t, s)
-	conn, err := defaultJetStreamClient.Connect(ctx)
+	js, err := defaultJetStreamClient.JetStreamContext()
 	assert.NoError(t, err)
-	js, err := conn.JetStream()
-	assert.NoError(t, err)
-	defer conn.Close()
+	defer defaultJetStreamClient.Close()
 
 	streamName := "getName"
 	addStream(t, js, streamName)
 	defer deleteStream(js, streamName)
 
-	bufferReader, err := NewJetStreamBufferReader(ctx, defaultJetStreamClient, streamName, streamName, streamName)
+	bufferReader, err := NewJetStreamBufferReader(ctx, defaultJetStreamClient, streamName, streamName, streamName, defaultPartitionIdx)
 	assert.NoError(t, err)
 	br := bufferReader.(*jetStreamReader)
 	assert.Equal(t, br.GetName(), streamName)
@@ -166,17 +163,15 @@ func TestClose(t *testing.T) {
 	defer cancel()
 
 	defaultJetStreamClient := natstest.JetStreamClient(t, s)
-	conn, err := defaultJetStreamClient.Connect(ctx)
-	assert.NoError(t, err)
-	defer conn.Close()
-	js, err := conn.JetStream()
+	defer defaultJetStreamClient.Close()
+	js, err := defaultJetStreamClient.JetStreamContext()
 	assert.NoError(t, err)
 
 	streamName := "close"
 	addStream(t, js, streamName)
 	defer deleteStream(js, streamName)
 
-	bufferReader, err := NewJetStreamBufferReader(ctx, defaultJetStreamClient, streamName, streamName, streamName)
+	bufferReader, err := NewJetStreamBufferReader(ctx, defaultJetStreamClient, streamName, streamName, streamName, defaultPartitionIdx)
 	assert.NoError(t, err)
 
 	br := bufferReader.(*jetStreamReader)
@@ -184,7 +179,7 @@ func TestClose(t *testing.T) {
 
 }
 
-func addStream(t *testing.T, js *jsclient.JetStreamContext, streamName string) {
+func addStream(t *testing.T, js nats.JetStreamContext, streamName string) {
 
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:       streamName,
@@ -208,7 +203,7 @@ func addStream(t *testing.T, js *jsclient.JetStreamContext, streamName string) {
 
 }
 
-func deleteStream(js *jsclient.JetStreamContext, streamName string) {
+func deleteStream(js nats.JetStreamContext, streamName string) {
 	_ = js.DeleteConsumer(streamName, streamName)
 	_ = js.DeleteStream(streamName)
 }

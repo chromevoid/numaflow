@@ -21,8 +21,6 @@ import (
 	"testing"
 
 	"github.com/goccy/go-json"
-	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
-	"github.com/numaproj/numaflow/pkg/reconciler"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap/zaptest"
 	appv1 "k8s.io/api/apps/v1"
@@ -32,10 +30,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
+	"github.com/numaproj/numaflow/pkg/reconciler"
 )
 
 const (
@@ -108,7 +110,7 @@ func init() {
 
 func Test_NewReconciler(t *testing.T) {
 	cl := fake.NewClientBuilder().Build()
-	r := NewReconciler(cl, scheme.Scheme, fakeConfig, testFlowImage, zaptest.NewLogger(t).Sugar())
+	r := NewReconciler(cl, scheme.Scheme, fakeConfig, testFlowImage, zaptest.NewLogger(t).Sugar(), record.NewFakeRecorder(64))
 	_, ok := r.(*pipelineReconciler)
 	assert.True(t, ok)
 }
@@ -123,11 +125,12 @@ func Test_reconcile(t *testing.T) {
 		err := cl.Create(ctx, testIsbSvc)
 		assert.Nil(t, err)
 		r := &pipelineReconciler{
-			client: cl,
-			scheme: scheme.Scheme,
-			config: fakeConfig,
-			image:  testFlowImage,
-			logger: zaptest.NewLogger(t).Sugar(),
+			client:   cl,
+			scheme:   scheme.Scheme,
+			config:   fakeConfig,
+			image:    testFlowImage,
+			logger:   zaptest.NewLogger(t).Sugar(),
+			recorder: record.NewFakeRecorder(64),
 		}
 		testObj := testPipeline.DeepCopy()
 		_, err = r.reconcile(ctx, testObj)
@@ -144,6 +147,62 @@ func Test_reconcile(t *testing.T) {
 	})
 }
 
+func Test_reconcileEvents(t *testing.T) {
+	t.Run("test reconcile - invalid name", func(t *testing.T) {
+		cl := fake.NewClientBuilder().Build()
+		ctx := context.TODO()
+		testIsbSvc := testNativeRedisIsbSvc.DeepCopy()
+		testIsbSvc.Status.MarkConfigured()
+		testIsbSvc.Status.MarkDeployed()
+		err := cl.Create(ctx, testIsbSvc)
+		assert.Nil(t, err)
+		r := &pipelineReconciler{
+			client:   cl,
+			scheme:   scheme.Scheme,
+			config:   fakeConfig,
+			image:    testFlowImage,
+			logger:   zaptest.NewLogger(t).Sugar(),
+			recorder: record.NewFakeRecorder(64),
+		}
+		testObj := testPipeline.DeepCopy()
+		testObj.Status.Phase = "Paused"
+		_, err = r.reconcile(ctx, testObj)
+		assert.NoError(t, err)
+		testObj.Name = "very-very-very-loooooooooooooooooooooooooooooooooooong"
+		_, err = r.reconcile(ctx, testObj)
+		assert.Error(t, err)
+		events := getEvents(r)
+		assert.Contains(t, events, "Normal UpdatePipelinePhase Updated pipeline phase from Paused to Running")
+		assert.Contains(t, events, "Warning ReconcilePipelineFailed Failed to reconcile pipeline: the length of the pipeline name plus the vertex name is over the max limit. (very-very-very-loooooooooooooooooooooooooooooooooooong-input), [must be no more than 63 characters]")
+	})
+
+	t.Run("test reconcile - duplicate vertex", func(t *testing.T) {
+		cl := fake.NewClientBuilder().Build()
+		ctx := context.TODO()
+		testIsbSvc := testNativeRedisIsbSvc.DeepCopy()
+		testIsbSvc.Status.MarkConfigured()
+		testIsbSvc.Status.MarkDeployed()
+		err := cl.Create(ctx, testIsbSvc)
+		assert.Nil(t, err)
+		r := &pipelineReconciler{
+			client:   cl,
+			scheme:   scheme.Scheme,
+			config:   fakeConfig,
+			image:    testFlowImage,
+			logger:   zaptest.NewLogger(t).Sugar(),
+			recorder: record.NewFakeRecorder(64),
+		}
+		testObj := testPipeline.DeepCopy()
+		_, err = r.reconcile(ctx, testObj)
+		assert.NoError(t, err)
+		testObj.Spec.Vertices = append(testObj.Spec.Vertices, dfv1.AbstractVertex{Name: "input", Source: &dfv1.Source{}})
+		_, err = r.reconcile(ctx, testObj)
+		assert.Error(t, err)
+		events := getEvents(r)
+		assert.Contains(t, events, "Warning ReconcilePipelineFailed Failed to reconcile pipeline: duplicate vertex name \"input\"")
+	})
+}
+
 func Test_buildVertices(t *testing.T) {
 	r := buildVertices(testPipeline)
 	assert.Equal(t, 3, len(r))
@@ -155,12 +214,49 @@ func Test_buildVertices(t *testing.T) {
 func Test_buildReducesVertices(t *testing.T) {
 	pl := testReducePipeline.DeepCopy()
 	pl.Spec.Vertices[1].UDF.GroupBy.Keyed = true
-	pl.Spec.Edges[0].Parallelism = pointer.Int32(2)
+	pl.Spec.Vertices[1].Partitions = pointer.Int32(2)
 	r := buildVertices(pl)
-	assert.Equal(t, 5, len(r))
+	assert.Equal(t, 6, len(r))
 	_, existing := r[pl.Name+"-"+pl.Spec.Vertices[1].Name]
 	assert.True(t, existing)
 	assert.Equal(t, int32(2), *r[pl.Name+"-"+pl.Spec.Vertices[1].Name].Spec.Replicas)
+}
+
+func Test_pauseAndResumePipeline(t *testing.T) {
+	cl := fake.NewClientBuilder().Build()
+	ctx := context.TODO()
+	testIsbSvc := testNativeRedisIsbSvc.DeepCopy()
+	testIsbSvc.Status.MarkConfigured()
+	testIsbSvc.Status.MarkDeployed()
+	err := cl.Create(ctx, testIsbSvc)
+	assert.Nil(t, err)
+	r := &pipelineReconciler{
+		client:   cl,
+		scheme:   scheme.Scheme,
+		config:   fakeConfig,
+		image:    testFlowImage,
+		logger:   zaptest.NewLogger(t).Sugar(),
+		recorder: record.NewFakeRecorder(64),
+	}
+	testObj := testPipeline.DeepCopy()
+	testObj.Spec.Vertices[0].Scale.Min = pointer.Int32(3)
+	_, err = r.reconcile(ctx, testObj)
+	assert.NoError(t, err)
+	_, err = r.pausePipeline(ctx, testObj)
+	assert.NoError(t, err)
+	v, err := r.findExistingVertices(ctx, testObj)
+	assert.NoError(t, err)
+	assert.Equal(t, int32(0), *v[testObj.Name+"-"+testObj.Spec.Vertices[0].Name].Spec.Replicas)
+	assert.NotNil(t, testObj.Annotations[dfv1.KeyPauseTimestamp])
+	testObj.Annotations[dfv1.KeyPauseTimestamp] = ""
+	_, err = r.resumePipeline(ctx, testObj)
+	assert.NoError(t, err)
+	v, err = r.findExistingVertices(ctx, testObj)
+	assert.NoError(t, err)
+	// when auto-scaling is enabled, while resuming the pipeline, instead of setting the replicas to Scale.Min,
+	// we set it to one and let auto-scaling to scale up
+	assert.Equal(t, int32(1), *v[testObj.Name+"-"+testObj.Spec.Vertices[0].Name].Spec.Replicas)
+	assert.NoError(t, err)
 }
 
 func Test_copyVertexLimits(t *testing.T) {
@@ -193,34 +289,59 @@ func Test_copyVertexLimits(t *testing.T) {
 	assert.Equal(t, "3s", v.Limits.ReadTimeout.Duration.String())
 }
 
-func Test_copyEdgeLimits(t *testing.T) {
-	pl := testPipeline.DeepCopy()
-	edges := []dfv1.Edge{{From: "in", To: "out"}}
-	result := copyEdgeLimits(pl, edges)
-	for _, e := range result {
-		assert.NotNil(t, e.Limits)
-		assert.Equal(t, int64(dfv1.DefaultBufferLength), int64(*e.Limits.BufferMaxLength))
-	}
-	onethouand := uint64(1000)
-	eighty := uint32(80)
-	pl.Spec.Limits = &dfv1.PipelineLimits{BufferMaxLength: &onethouand, BufferUsageLimit: &eighty}
-	result = copyEdgeLimits(pl, edges)
-	for _, e := range result {
-		assert.NotNil(t, e.Limits)
-		assert.NotNil(t, e.Limits.BufferMaxLength)
-		assert.NotNil(t, e.Limits.BufferUsageLimit)
-	}
+func Test_copyEdges(t *testing.T) {
+	t.Run("test copy map", func(t *testing.T) {
+		pl := testPipeline.DeepCopy()
+		edges := []dfv1.Edge{{From: "input", To: "p1"}}
+		result := copyEdges(pl, edges)
+		for _, e := range result {
+			assert.NotNil(t, e.ToVertexLimits)
+			assert.Equal(t, int64(dfv1.DefaultBufferLength), int64(*e.ToVertexLimits.BufferMaxLength))
+		}
+		onethouand := uint64(1000)
+		eighty := uint32(80)
+		pl.Spec.Limits = &dfv1.PipelineLimits{BufferMaxLength: &onethouand, BufferUsageLimit: &eighty}
+		result = copyEdges(pl, edges)
+		for _, e := range result {
+			assert.NotNil(t, e.ToVertexLimits)
+			assert.NotNil(t, e.ToVertexLimits.BufferMaxLength)
+			assert.NotNil(t, e.ToVertexLimits.BufferUsageLimit)
+		}
 
-	twothouand := uint64(2000)
-	edges = []dfv1.Edge{{From: "in", To: "out", Limits: &dfv1.EdgeLimits{BufferMaxLength: &twothouand}}}
-	result = copyEdgeLimits(pl, edges)
-	for _, e := range result {
-		assert.NotNil(t, e.Limits)
-		assert.NotNil(t, e.Limits.BufferMaxLength)
-		assert.Equal(t, twothouand, *e.Limits.BufferMaxLength)
-		assert.NotNil(t, e.Limits.BufferUsageLimit)
-		assert.Equal(t, eighty, *e.Limits.BufferUsageLimit)
-	}
+		twothouand := uint64(2000)
+		pl.Spec.Vertices[2].Limits = &dfv1.VertexLimits{BufferMaxLength: &twothouand}
+		edges = []dfv1.Edge{{From: "p1", To: "output"}}
+		result = copyEdges(pl, edges)
+		for _, e := range result {
+			assert.NotNil(t, e.ToVertexLimits)
+			assert.NotNil(t, e.ToVertexLimits.BufferMaxLength)
+			assert.Equal(t, twothouand, *e.ToVertexLimits.BufferMaxLength)
+			assert.NotNil(t, e.ToVertexLimits.BufferUsageLimit)
+			assert.Equal(t, eighty, *e.ToVertexLimits.BufferUsageLimit)
+		}
+	})
+
+	t.Run("test copy reduce", func(t *testing.T) {
+		pl := testReducePipeline.DeepCopy()
+		edges := []dfv1.Edge{{From: "p1", To: "p2"}}
+		result := copyEdges(pl, edges)
+		assert.Equal(t, 1, len(result))
+		assert.Equal(t, "p1", result[0].From)
+		assert.Equal(t, "p2", result[0].To)
+		assert.NotNil(t, result[0].ToVertexLimits)
+		assert.Equal(t, int64(dfv1.DefaultBufferLength), int64(*result[0].ToVertexLimits.BufferMaxLength))
+		assert.Equal(t, int32(2), *result[0].ToVertexPartitionCount)
+		assert.Equal(t, int32(1), *result[0].FromVertexPartitionCount)
+
+		edges = []dfv1.Edge{{From: "p2", To: "p3"}}
+		result = copyEdges(pl, edges)
+		assert.Equal(t, 1, len(result))
+		assert.Equal(t, "p2", result[0].From)
+		assert.Equal(t, "p3", result[0].To)
+		assert.Equal(t, int32(1), *result[0].ToVertexPartitionCount)
+		assert.Equal(t, int32(2), *result[0].FromVertexPartitionCount)
+	})
+
 }
 
 func Test_buildISBBatchJob(t *testing.T) {
@@ -228,7 +349,7 @@ func Test_buildISBBatchJob(t *testing.T) {
 		j := buildISBBatchJob(testPipeline, testFlowImage, fakeIsbSvcConfig, "subcmd", []string{"sss"}, "test")
 		assert.Equal(t, 1, len(j.Spec.Template.Spec.Containers))
 		assert.True(t, len(j.Spec.Template.Spec.Containers[0].Args) > 0)
-		assert.Contains(t, j.Name, testPipeline.Name+"-buffer-test-")
+		assert.Contains(t, j.Name, testPipeline.Name+"-test-")
 		envNames := []string{}
 		for _, e := range j.Spec.Template.Spec.Containers[0].Env {
 			envNames = append(envNames, e.Name)
@@ -329,7 +450,7 @@ func Test_cleanupBuffers(t *testing.T) {
 
 	t.Run("test create cleanup buffer job no isbsvc", func(t *testing.T) {
 		testObj := testPipeline.DeepCopy()
-		assert.Equal(t, 4, len(testObj.GetAllBuffers()))
+		assert.Equal(t, 2, len(testObj.GetAllBuffers()))
 		err := r.cleanUpBuffers(ctx, testObj, zaptest.NewLogger(t).Sugar())
 		assert.NoError(t, err)
 		selector, _ := labels.Parse(dfv1.KeyPipelineName + "=" + testObj.Name)
@@ -353,7 +474,7 @@ func Test_cleanupBuffers(t *testing.T) {
 		err = r.client.List(ctx, jobs, &client.ListOptions{Namespace: testNamespace, LabelSelector: selector})
 		assert.NoError(t, err)
 		assert.Equal(t, 1, len(jobs.Items))
-		assert.Contains(t, jobs.Items[0].Name, "cleanup")
+		assert.Contains(t, jobs.Items[0].Name, "cln")
 		assert.Equal(t, 0, len(jobs.Items[0].OwnerReferences))
 	})
 }
@@ -362,11 +483,12 @@ func TestCreateOrUpdateDaemon(t *testing.T) {
 	cl := fake.NewClientBuilder().Build()
 	ctx := context.TODO()
 	r := &pipelineReconciler{
-		client: cl,
-		scheme: scheme.Scheme,
-		config: fakeConfig,
-		image:  testFlowImage,
-		logger: zaptest.NewLogger(t).Sugar(),
+		client:   cl,
+		scheme:   scheme.Scheme,
+		config:   fakeConfig,
+		image:    testFlowImage,
+		logger:   zaptest.NewLogger(t).Sugar(),
+		recorder: record.NewFakeRecorder(64),
 	}
 
 	t.Run("test create or update service", func(t *testing.T) {
@@ -390,4 +512,115 @@ func TestCreateOrUpdateDaemon(t *testing.T) {
 		assert.Len(t, deployList.Items, 1)
 		assert.Equal(t, "test-pl-daemon", deployList.Items[0].Name)
 	})
+}
+
+func Test_createOrUpdateSIMDeployments(t *testing.T) {
+	cl := fake.NewClientBuilder().Build()
+	ctx := context.TODO()
+	r := &pipelineReconciler{
+		client:   cl,
+		scheme:   scheme.Scheme,
+		config:   fakeConfig,
+		image:    testFlowImage,
+		logger:   zaptest.NewLogger(t).Sugar(),
+		recorder: record.NewFakeRecorder(64),
+	}
+
+	t.Run("no side inputs", func(t *testing.T) {
+		err := r.createOrUpdateSIMDeployments(ctx, testPipeline, fakeIsbSvcConfig)
+		assert.NoError(t, err)
+		deployList := appv1.DeploymentList{}
+		err = cl.List(context.Background(), &deployList, &client.ListOptions{Namespace: testNamespace, LabelSelector: labels.SelectorFromSet(labels.Set{dfv1.KeyComponent: dfv1.ComponentSideInputManager})})
+		assert.NoError(t, err)
+		assert.Len(t, deployList.Items, 0)
+	})
+
+	t.Run("one side input", func(t *testing.T) {
+		testObj := testPipeline.DeepCopy()
+		testObj.Spec.SideInputs = []dfv1.SideInput{
+			{
+				Name: "s1",
+				Container: &dfv1.Container{
+					Image: "test",
+				},
+				Trigger: &dfv1.SideInputTrigger{
+					Schedule: "1 * * * *",
+				},
+			},
+		}
+		err := r.createOrUpdateSIMDeployments(ctx, testObj, fakeIsbSvcConfig)
+		assert.NoError(t, err)
+		deployList := appv1.DeploymentList{}
+		err = cl.List(context.Background(), &deployList, &client.ListOptions{Namespace: testNamespace, LabelSelector: labels.SelectorFromSet(labels.Set{dfv1.KeyComponent: dfv1.ComponentSideInputManager})})
+		assert.NoError(t, err)
+		assert.Len(t, deployList.Items, 1)
+		assert.Equal(t, testObj.GetSideInputsManagerDeploymentName("s1"), deployList.Items[0].Name)
+	})
+
+	t.Run("two side inputs", func(t *testing.T) {
+		testObj := testPipeline.DeepCopy()
+		testObj.Spec.SideInputs = []dfv1.SideInput{
+			{
+				Name: "s1",
+				Container: &dfv1.Container{
+					Image: "test",
+				},
+				Trigger: &dfv1.SideInputTrigger{
+					Schedule: "1 * * * *",
+				},
+			},
+			{
+				Name: "s2",
+				Container: &dfv1.Container{
+					Image: "test",
+				},
+				Trigger: &dfv1.SideInputTrigger{
+					Schedule: "1 * * * *",
+				},
+			},
+		}
+		err := r.createOrUpdateSIMDeployments(ctx, testObj, fakeIsbSvcConfig)
+		assert.NoError(t, err)
+		deployList := appv1.DeploymentList{}
+		err = cl.List(context.Background(), &deployList, &client.ListOptions{Namespace: testNamespace, LabelSelector: labels.SelectorFromSet(labels.Set{dfv1.KeyComponent: dfv1.ComponentSideInputManager})})
+		assert.NoError(t, err)
+		assert.Len(t, deployList.Items, 2)
+		assert.Equal(t, testObj.GetSideInputsManagerDeploymentName("s1"), deployList.Items[0].Name)
+		assert.Equal(t, testObj.GetSideInputsManagerDeploymentName("s2"), deployList.Items[1].Name)
+	})
+
+	t.Run("update side inputs", func(t *testing.T) {
+		testObj := testPipeline.DeepCopy()
+		testObj.Spec.SideInputs = []dfv1.SideInput{
+			{
+				Name: "s1",
+				Container: &dfv1.Container{
+					Image: "test",
+				},
+				Trigger: &dfv1.SideInputTrigger{
+					Schedule: "1 * * * *",
+				},
+			},
+		}
+		err := r.createOrUpdateSIMDeployments(ctx, testObj, fakeIsbSvcConfig)
+		assert.NoError(t, err)
+		testObj.Spec.SideInputs[0].Name = "s2"
+		err = r.createOrUpdateSIMDeployments(ctx, testObj, fakeIsbSvcConfig)
+		assert.NoError(t, err)
+		deployList := appv1.DeploymentList{}
+		err = cl.List(context.Background(), &deployList, &client.ListOptions{Namespace: testNamespace, LabelSelector: labels.SelectorFromSet(labels.Set{dfv1.KeyComponent: dfv1.ComponentSideInputManager})})
+		assert.NoError(t, err)
+		assert.Len(t, deployList.Items, 1)
+		assert.Equal(t, testObj.GetSideInputsManagerDeploymentName("s2"), deployList.Items[0].Name)
+	})
+}
+
+func getEvents(reconciler *pipelineReconciler) []string {
+	c := reconciler.recorder.(*record.FakeRecorder).Events
+	close(c)
+	events := make([]string, len(c))
+	for msg := range c {
+		events = append(events, msg)
+	}
+	return events
 }

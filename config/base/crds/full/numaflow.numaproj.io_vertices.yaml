@@ -488,6 +488,18 @@ spec:
                     type: string
                   resources:
                     properties:
+                      claims:
+                        items:
+                          properties:
+                            name:
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                       limits:
                         additionalProperties:
                           anyOf:
@@ -614,7 +626,7 @@ spec:
                       type: object
                     from:
                       type: string
-                    limits:
+                    fromVertexLimits:
                       properties:
                         bufferMaxLength:
                           format: int64
@@ -622,20 +634,48 @@ spec:
                         bufferUsageLimit:
                           format: int32
                           type: integer
+                        readBatchSize:
+                          format: int64
+                          type: integer
+                        readTimeout:
+                          type: string
                       type: object
+                    fromVertexPartitionCount:
+                      format: int32
+                      type: integer
+                    fromVertexType:
+                      type: string
                     onFull:
                       enum:
                       - retryUntilSuccess
                       - discardLatest
                       type: string
-                    parallelism:
+                    to:
+                      type: string
+                    toVertexLimits:
+                      properties:
+                        bufferMaxLength:
+                          format: int64
+                          type: integer
+                        bufferUsageLimit:
+                          format: int32
+                          type: integer
+                        readBatchSize:
+                          format: int64
+                          type: integer
+                        readTimeout:
+                          type: string
+                      type: object
+                    toVertexPartitionCount:
                       format: int32
                       type: integer
-                    to:
+                    toVertexType:
                       type: string
                   required:
                   - from
+                  - fromVertexType
                   - to
+                  - toVertexType
                   type: object
                 type: array
               imagePullSecrets:
@@ -732,6 +772,18 @@ spec:
                     type: string
                   resources:
                     properties:
+                      claims:
+                        items:
+                          properties:
+                            name:
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                       limits:
                         additionalProperties:
                           anyOf:
@@ -1194,6 +1246,18 @@ spec:
                       type: object
                     resources:
                       properties:
+                        claims:
+                          items:
+                            properties:
+                              name:
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          type: array
+                          x-kubernetes-list-map-keys:
+                          - name
+                          x-kubernetes-list-type: map
                         limits:
                           additionalProperties:
                             anyOf:
@@ -1402,6 +1466,12 @@ spec:
                 type: string
               limits:
                 properties:
+                  bufferMaxLength:
+                    format: int64
+                    type: integer
+                  bufferUsageLimit:
+                    format: int32
+                    type: integer
                   readBatchSize:
                     format: int64
                     type: integer
@@ -1425,6 +1495,9 @@ spec:
                 additionalProperties:
                   type: string
                 type: object
+              partitions:
+                format: int32
+                type: integer
               pipelineName:
                 type: string
               priority:
@@ -1457,10 +1530,13 @@ spec:
                   replicasPerScale:
                     format: int32
                     type: integer
-                  targetBufferAvailability:
+                  scaleDownCooldownSeconds:
                     format: int32
                     type: integer
-                  targetBufferUsage:
+                  scaleUpCooldownSeconds:
+                    format: int32
+                    type: integer
+                  targetBufferAvailability:
                     format: int32
                     type: integer
                   targetProcessingSeconds:
@@ -1536,6 +1612,188 @@ spec:
                 type: object
               serviceAccountName:
                 type: string
+              sideInputs:
+                items:
+                  type: string
+                type: array
+              sideInputsContainerTemplate:
+                properties:
+                  env:
+                    items:
+                      properties:
+                        name:
+                          type: string
+                        value:
+                          type: string
+                        valueFrom:
+                          properties:
+                            configMapKeyRef:
+                              properties:
+                                key:
+                                  type: string
+                                name:
+                                  type: string
+                                optional:
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                            fieldRef:
+                              properties:
+                                apiVersion:
+                                  type: string
+                                fieldPath:
+                                  type: string
+                              required:
+                              - fieldPath
+                              type: object
+                            resourceFieldRef:
+                              properties:
+                                containerName:
+                                  type: string
+                                divisor:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                resource:
+                                  type: string
+                              required:
+                              - resource
+                              type: object
+                            secretKeyRef:
+                              properties:
+                                key:
+                                  type: string
+                                name:
+                                  type: string
+                                optional:
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                          type: object
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  envFrom:
+                    items:
+                      properties:
+                        configMapRef:
+                          properties:
+                            name:
+                              type: string
+                            optional:
+                              type: boolean
+                          type: object
+                        prefix:
+                          type: string
+                        secretRef:
+                          properties:
+                            name:
+                              type: string
+                            optional:
+                              type: boolean
+                          type: object
+                      type: object
+                    type: array
+                  imagePullPolicy:
+                    type: string
+                  resources:
+                    properties:
+                      claims:
+                        items:
+                          properties:
+                            name:
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        type: object
+                    type: object
+                  securityContext:
+                    properties:
+                      allowPrivilegeEscalation:
+                        type: boolean
+                      capabilities:
+                        properties:
+                          add:
+                            items:
+                              type: string
+                            type: array
+                          drop:
+                            items:
+                              type: string
+                            type: array
+                        type: object
+                      privileged:
+                        type: boolean
+                      procMount:
+                        type: string
+                      readOnlyRootFilesystem:
+                        type: boolean
+                      runAsGroup:
+                        format: int64
+                        type: integer
+                      runAsNonRoot:
+                        type: boolean
+                      runAsUser:
+                        format: int64
+                        type: integer
+                      seLinuxOptions:
+                        properties:
+                          level:
+                            type: string
+                          role:
+                            type: string
+                          type:
+                            type: string
+                          user:
+                            type: string
+                        type: object
+                      seccompProfile:
+                        properties:
+                          localhostProfile:
+                            type: string
+                          type:
+                            type: string
+                        required:
+                        - type
+                        type: object
+                      windowsOptions:
+                        properties:
+                          gmsaCredentialSpec:
+                            type: string
+                          gmsaCredentialSpecName:
+                            type: string
+                          hostProcess:
+                            type: boolean
+                          runAsUserName:
+                            type: string
+                        type: object
+                    type: object
+                type: object
               sidecars:
                 items:
                   properties:
@@ -1919,6 +2177,18 @@ spec:
                       type: object
                     resources:
                       properties:
+                        claims:
+                          items:
+                            properties:
+                              name:
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          type: array
+                          x-kubernetes-list-map-keys:
+                          - name
+                          x-kubernetes-list-type: map
                         limits:
                           additionalProperties:
                             anyOf:
@@ -2374,6 +2644,18 @@ spec:
                             type: string
                           resources:
                             properties:
+                              claims:
+                                items:
+                                  properties:
+                                    name:
+                                      type: string
+                                  required:
+                                  - name
+                                  type: object
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - name
+                                x-kubernetes-list-type: map
                               limits:
                                 additionalProperties:
                                   anyOf:
@@ -2483,6 +2765,9 @@ spec:
                     properties:
                       duration:
                         default: 1s
+                        type: string
+                      jitter:
+                        default: 0s
                         type: string
                       keyCount:
                         format: int32
@@ -2767,87 +3052,6 @@ spec:
                     - subject
                     - url
                     type: object
-                  redisStreams:
-                    properties:
-                      consumerGroup:
-                        type: string
-                      masterName:
-                        type: string
-                      password:
-                        properties:
-                          key:
-                            type: string
-                          name:
-                            type: string
-                          optional:
-                            type: boolean
-                        required:
-                        - key
-                        type: object
-                      readFromBeginning:
-                        type: boolean
-                      sentinelPassword:
-                        properties:
-                          key:
-                            type: string
-                          name:
-                            type: string
-                          optional:
-                            type: boolean
-                        required:
-                        - key
-                        type: object
-                      sentinelUrl:
-                        type: string
-                      stream:
-                        type: string
-                      tls:
-                        properties:
-                          caCertSecret:
-                            properties:
-                              key:
-                                type: string
-                              name:
-                                type: string
-                              optional:
-                                type: boolean
-                            required:
-                            - key
-                            type: object
-                          clientCertSecret:
-                            properties:
-                              key:
-                                type: string
-                              name:
-                                type: string
-                              optional:
-                                type: boolean
-                            required:
-                            - key
-                            type: object
-                          clientKeySecret:
-                            properties:
-                              key:
-                                type: string
-                              name:
-                                type: string
-                              optional:
-                                type: boolean
-                            required:
-                            - key
-                            type: object
-                          insecureSkipVerify:
-                            type: boolean
-                        type: object
-                      url:
-                        type: string
-                      user:
-                        type: string
-                    required:
-                    - consumerGroup
-                    - readFromBeginning
-                    - stream
-                    type: object
                   transformer:
                     properties:
                       builtin:
@@ -2864,6 +3068,7 @@ spec:
                             enum:
                             - eventTimeExtractor
                             - filter
+                            - timeExtractionFilter
                             type: string
                         required:
                         - name
@@ -2965,6 +3170,18 @@ spec:
                             type: string
                           resources:
                             properties:
+                              claims:
+                                items:
+                                  properties:
+                                    name:
+                                      type: string
+                                  required:
+                                  - name
+                                  type: object
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - name
+                                x-kubernetes-list-type: map
                               limits:
                                 additionalProperties:
                                   anyOf:
@@ -3065,6 +3282,219 @@ spec:
                             type: array
                         type: object
                     type: object
+                  udsource:
+                    properties:
+                      container:
+                        properties:
+                          args:
+                            items:
+                              type: string
+                            type: array
+                          command:
+                            items:
+                              type: string
+                            type: array
+                          env:
+                            items:
+                              properties:
+                                name:
+                                  type: string
+                                value:
+                                  type: string
+                                valueFrom:
+                                  properties:
+                                    configMapKeyRef:
+                                      properties:
+                                        key:
+                                          type: string
+                                        name:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                      required:
+                                      - key
+                                      type: object
+                                    fieldRef:
+                                      properties:
+                                        apiVersion:
+                                          type: string
+                                        fieldPath:
+                                          type: string
+                                      required:
+                                      - fieldPath
+                                      type: object
+                                    resourceFieldRef:
+                                      properties:
+                                        containerName:
+                                          type: string
+                                        divisor:
+                                          anyOf:
+                                          - type: integer
+                                          - type: string
+                                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                          x-kubernetes-int-or-string: true
+                                        resource:
+                                          type: string
+                                      required:
+                                      - resource
+                                      type: object
+                                    secretKeyRef:
+                                      properties:
+                                        key:
+                                          type: string
+                                        name:
+                                          type: string
+                                        optional:
+                                          type: boolean
+                                      required:
+                                      - key
+                                      type: object
+                                  type: object
+                              required:
+                              - name
+                              type: object
+                            type: array
+                          envFrom:
+                            items:
+                              properties:
+                                configMapRef:
+                                  properties:
+                                    name:
+                                      type: string
+                                    optional:
+                                      type: boolean
+                                  type: object
+                                prefix:
+                                  type: string
+                                secretRef:
+                                  properties:
+                                    name:
+                                      type: string
+                                    optional:
+                                      type: boolean
+                                  type: object
+                              type: object
+                            type: array
+                          image:
+                            type: string
+                          imagePullPolicy:
+                            type: string
+                          resources:
+                            properties:
+                              claims:
+                                items:
+                                  properties:
+                                    name:
+                                      type: string
+                                  required:
+                                  - name
+                                  type: object
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - name
+                                x-kubernetes-list-type: map
+                              limits:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                type: object
+                              requests:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                type: object
+                            type: object
+                          securityContext:
+                            properties:
+                              allowPrivilegeEscalation:
+                                type: boolean
+                              capabilities:
+                                properties:
+                                  add:
+                                    items:
+                                      type: string
+                                    type: array
+                                  drop:
+                                    items:
+                                      type: string
+                                    type: array
+                                type: object
+                              privileged:
+                                type: boolean
+                              procMount:
+                                type: string
+                              readOnlyRootFilesystem:
+                                type: boolean
+                              runAsGroup:
+                                format: int64
+                                type: integer
+                              runAsNonRoot:
+                                type: boolean
+                              runAsUser:
+                                format: int64
+                                type: integer
+                              seLinuxOptions:
+                                properties:
+                                  level:
+                                    type: string
+                                  role:
+                                    type: string
+                                  type:
+                                    type: string
+                                  user:
+                                    type: string
+                                type: object
+                              seccompProfile:
+                                properties:
+                                  localhostProfile:
+                                    type: string
+                                  type:
+                                    type: string
+                                required:
+                                - type
+                                type: object
+                              windowsOptions:
+                                properties:
+                                  gmsaCredentialSpec:
+                                    type: string
+                                  gmsaCredentialSpecName:
+                                    type: string
+                                  hostProcess:
+                                    type: boolean
+                                  runAsUserName:
+                                    type: string
+                                type: object
+                            type: object
+                          volumeMounts:
+                            items:
+                              properties:
+                                mountPath:
+                                  type: string
+                                mountPropagation:
+                                  type: string
+                                name:
+                                  type: string
+                                readOnly:
+                                  type: boolean
+                                subPath:
+                                  type: string
+                                subPathExpr:
+                                  type: string
+                              required:
+                              - mountPath
+                              - name
+                              type: object
+                            type: array
+                        type: object
+                    required:
+                    - container
+                    type: object
                 type: object
               toEdges:
                 items:
@@ -3091,7 +3521,7 @@ spec:
                       type: object
                     from:
                       type: string
-                    limits:
+                    fromVertexLimits:
                       properties:
                         bufferMaxLength:
                           format: int64
@@ -3099,20 +3529,48 @@ spec:
                         bufferUsageLimit:
                           format: int32
                           type: integer
+                        readBatchSize:
+                          format: int64
+                          type: integer
+                        readTimeout:
+                          type: string
                       type: object
+                    fromVertexPartitionCount:
+                      format: int32
+                      type: integer
+                    fromVertexType:
+                      type: string
                     onFull:
                       enum:
                       - retryUntilSuccess
                       - discardLatest
                       type: string
-                    parallelism:
+                    to:
+                      type: string
+                    toVertexLimits:
+                      properties:
+                        bufferMaxLength:
+                          format: int64
+                          type: integer
+                        bufferUsageLimit:
+                          format: int32
+                          type: integer
+                        readBatchSize:
+                          format: int64
+                          type: integer
+                        readTimeout:
+                          type: string
+                      type: object
+                    toVertexPartitionCount:
                       format: int32
                       type: integer
-                    to:
+                    toVertexType:
                       type: string
                   required:
                   - from
+                  - fromVertexType
                   - to
+                  - toVertexType
                   type: object
                 type: array
               tolerations:
@@ -3248,6 +3706,18 @@ spec:
                         type: string
                       resources:
                         properties:
+                          claims:
+                            items:
+                              properties:
+                                name:
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - name
+                            x-kubernetes-list-type: map
                           limits:
                             additionalProperties:
                               anyOf:
@@ -3386,6 +3856,13 @@ spec:
                             properties:
                               length:
                                 type: string
+                              streaming:
+                                type: boolean
+                            type: object
+                          session:
+                            properties:
+                              timeout:
+                                type: string
                             type: object
                           sliding:
                             properties:
@@ -3393,6 +3870,8 @@ spec:
                                 type: string
                               slide:
                                 type: string
+                              streaming:
+                                type: boolean
                             type: object
                         type: object
                     required:
@@ -3614,12 +4093,26 @@ spec:
                                       type: string
                                     name:
                                       type: string
+                                    namespace:
+                                      type: string
                                   required:
                                   - kind
                                   - name
                                   type: object
                                 resources:
                                   properties:
+                                    claims:
+                                      items:
+                                        properties:
+                                          name:
+                                            type: string
+                                        required:
+                                        - name
+                                        type: object
+                                      type: array
+                                      x-kubernetes-list-map-keys:
+                                      - name
+                                      x-kubernetes-list-type: map
                                     limits:
                                       additionalProperties:
                                         anyOf:
@@ -4086,6 +4579,16 @@ spec:
                   disabled:
                     default: false
                     type: boolean
+                  idleSource:
+                    properties:
+                      incrementBy:
+                        type: string
+                      stepInterval:
+                        default: 0s
+                        type: string
+                      threshold:
+                        type: string
+                    type: object
                   maxDelay:
                     default: 0s
                     type: string

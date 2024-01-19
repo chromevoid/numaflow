@@ -21,140 +21,172 @@ import (
 	"testing"
 	"time"
 
-	"github.com/numaproj/numaflow/pkg/forward"
-	"github.com/numaproj/numaflow/pkg/watermark/generic"
-
 	"github.com/stretchr/testify/assert"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
+	"github.com/numaproj/numaflow/pkg/forwarder"
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/isb/testutils"
 	natstest "github.com/numaproj/numaflow/pkg/shared/clients/nats/test"
+	"github.com/numaproj/numaflow/pkg/udf/forward"
+	"github.com/numaproj/numaflow/pkg/watermark/generic"
+	"github.com/numaproj/numaflow/pkg/watermark/wmb"
 )
 
 type myForwardJetStreamTest struct {
 }
 
-func (f myForwardJetStreamTest) WhereTo(_ []string, _ []string) ([]string, error) {
-	return []string{"to1"}, nil
+func (f myForwardJetStreamTest) WhereTo(_ []string, _ []string) ([]forwarder.VertexBuffer, error) {
+	return []forwarder.VertexBuffer{{
+		ToVertexName:         "to1",
+		ToVertexPartitionIdx: 0,
+	}}, nil
 }
 
 func (f myForwardJetStreamTest) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.WriteMessage, error) {
 	return testutils.CopyUDFTestApply(ctx, message)
 }
 
+func (f myForwardJetStreamTest) ApplyMapStream(ctx context.Context, message *isb.ReadMessage, writeMessageCh chan<- isb.WriteMessage) error {
+	return testutils.CopyUDFTestApplyStream(ctx, message, writeMessageCh)
+}
+
 // TestForwarderJetStreamBuffer is a test that is used to test forwarder with jetstream buffer
 func TestForwarderJetStreamBuffer(t *testing.T) {
-	s := natstest.RunJetStreamServer(t)
-	defer natstest.ShutdownJetStreamServer(t, s)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
-	defer cancel()
-	defaultJetStreamClient := natstest.JetStreamClient(t, s)
-	conn, err := defaultJetStreamClient.Connect(ctx)
-	assert.NoError(t, err)
-	defer conn.Close()
-	js, err := conn.JetStream()
-	assert.NoError(t, err)
-
-	streamName := "TestForwarderJetStreamBuffer"
-	addStream(t, js, streamName)
-	defer deleteStream(js, streamName)
-
-	toStreamName := "TestForwarderJetStreamBuffer-to"
-	addStream(t, js, toStreamName)
-	defer deleteStream(js, toStreamName)
-
-	bw, err := NewJetStreamBufferWriter(ctx, defaultJetStreamClient, streamName, streamName, streamName, WithMaxLength(10))
-	assert.NoError(t, err)
-	jw, _ := bw.(*jetStreamWriter)
-	defer jw.Close()
-	// Add some data
-	startTime := time.Unix(1636470000, 0)
-	messages := testutils.BuildTestWriteMessages(int64(10), startTime)
-	// Verify if buffer is not full.
-	for jw.isFull.Load() {
-		select {
-		case <-ctx.Done():
-			t.Fatalf("expected not to be full, %s", ctx.Err())
-		default:
-			time.Sleep(1 * time.Millisecond)
-		}
-	}
-	// Add some data to buffer using write
-	_, errs := jw.Write(ctx, messages)
-	assert.Equal(t, len(errs), 10)
-
-	// Verify if buffer is full.
-	for !jw.isFull.Load() {
-		select {
-		case <-ctx.Done():
-			t.Fatalf("full, %s", ctx.Err())
-		default:
-			time.Sleep(1 * time.Millisecond)
-		}
-	}
-
-	vertex := &dfv1.Vertex{Spec: dfv1.VertexSpec{
-		PipelineName: "testPipeline",
-		AbstractVertex: dfv1.AbstractVertex{
-			Name: "testVertex",
+	tests := []struct {
+		name          string
+		batchSize     int64
+		streamEnabled bool
+	}{
+		{
+			name:          "batch",
+			batchSize:     10,
+			streamEnabled: false,
 		},
-	}}
-
-	// Forwarder logic tested here with a jetstream read and write
-	bufferReader, err := NewJetStreamBufferReader(ctx, defaultJetStreamClient, streamName, streamName, streamName)
-	assert.NoError(t, err)
-	fromStep, _ := bufferReader.(*jetStreamReader)
-	defer fromStep.Close()
-
-	bufferWriter, err := NewJetStreamBufferWriter(ctx, defaultJetStreamClient, toStreamName, toStreamName, toStreamName, WithMaxLength(10))
-	assert.NoError(t, err)
-	to1 := bufferWriter.(*jetStreamWriter)
-	defer to1.Close()
-	toSteps := map[string]isb.BufferWriter{
-		"to1": to1,
+		{
+			name:          "stream",
+			batchSize:     1,
+			streamEnabled: true,
+		},
 	}
-	fetchWatermark, publishWatermark := generic.BuildNoOpWatermarkProgressorsFromBufferMap(toSteps)
-	f, err := forward.NewInterStepDataForward(vertex, fromStep, toSteps, myForwardJetStreamTest{}, myForwardJetStreamTest{}, fetchWatermark, publishWatermark)
-	assert.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := natstest.RunJetStreamServer(t)
+			defer natstest.ShutdownJetStreamServer(t, s)
 
-	stopped := f.Start()
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+			defer cancel()
+			defaultJetStreamClient := natstest.JetStreamClient(t, s)
+			defer defaultJetStreamClient.Close()
+			js, err := defaultJetStreamClient.JetStreamContext()
+			assert.NoError(t, err)
 
-	to1js, err := to1.conn.JetStream()
-	assert.NoError(t, err)
-	streamInfo, err := to1js.StreamInfo(toStreamName)
-	assert.NoError(t, err)
+			streamName := "TestForwarderJetStreamBuffer"
+			addStream(t, js, streamName)
+			defer deleteStream(js, streamName)
 
-	// Verify if number of messages in toBuffer is 10 (which is maxlength and hence buffer is full).
-	for streamInfo.State.Msgs != 10 {
-		streamInfo, _ = to1js.StreamInfo(toStreamName)
-		if streamInfo.State.Msgs == 10 {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("expected 10 msgs, %s", ctx.Err())
-		default:
-			time.Sleep(1 * time.Millisecond)
-		}
+			toStreamName := "TestForwarderJetStreamBuffer-to"
+			addStream(t, js, toStreamName)
+			defer deleteStream(js, toStreamName)
+
+			bw, err := NewJetStreamBufferWriter(ctx, defaultJetStreamClient, streamName, streamName, streamName, defaultPartitionIdx, WithMaxLength(10))
+			assert.NoError(t, err)
+			jw, _ := bw.(*jetStreamWriter)
+			defer jw.Close()
+			// Add some data
+			startTime := time.Unix(1636470000, 0)
+			messages := testutils.BuildTestWriteMessages(int64(10), startTime)
+			// Verify if buffer is not full.
+			for jw.isFull.Load() {
+				select {
+				case <-ctx.Done():
+					t.Fatalf("expected not to be full, %s", ctx.Err())
+				default:
+					time.Sleep(1 * time.Millisecond)
+				}
+			}
+			// Add some data to buffer using write
+			_, errs := jw.Write(ctx, messages)
+			assert.Equal(t, len(errs), 10)
+
+			// Verify if buffer is full.
+			for !jw.isFull.Load() {
+				select {
+				case <-ctx.Done():
+					t.Fatalf("full, %s", ctx.Err())
+				default:
+					time.Sleep(1 * time.Millisecond)
+				}
+			}
+
+			vertex := &dfv1.Vertex{Spec: dfv1.VertexSpec{
+				PipelineName: "testPipeline",
+				AbstractVertex: dfv1.AbstractVertex{
+					Name: "testVertex",
+				},
+			}}
+
+			vertexInstance := &dfv1.VertexInstance{
+				Vertex:  vertex,
+				Replica: 0,
+			}
+
+			// Forwarder logic tested here with a jetstream read and write
+			bufferReader, err := NewJetStreamBufferReader(ctx, defaultJetStreamClient, streamName, streamName, streamName, defaultPartitionIdx)
+			assert.NoError(t, err)
+			fromStep, _ := bufferReader.(*jetStreamReader)
+			defer fromStep.Close()
+
+			bufferWriter, err := NewJetStreamBufferWriter(ctx, defaultJetStreamClient, toStreamName, toStreamName, toStreamName, defaultPartitionIdx, WithMaxLength(10))
+			assert.NoError(t, err)
+			to1 := bufferWriter.(*jetStreamWriter)
+			defer to1.Close()
+			toSteps := map[string][]isb.BufferWriter{
+				"to1": {to1},
+			}
+
+			fetchWatermark, publishWatermark := generic.BuildNoOpWatermarkProgressorsFromBufferMap(toSteps)
+			f, err := forward.NewInterStepDataForward(vertexInstance, fromStep, toSteps, myForwardJetStreamTest{}, myForwardJetStreamTest{}, myForwardJetStreamTest{}, fetchWatermark, publishWatermark, wmb.NewIdleManager(len(toSteps)), forward.WithReadBatchSize(tt.batchSize), forward.WithUDFStreaming(tt.streamEnabled))
+			assert.NoError(t, err)
+
+			stopped := f.Start()
+
+			to1js, err := to1.client.JetStreamContext()
+			assert.NoError(t, err)
+			streamInfo, err := to1js.StreamInfo(toStreamName)
+			assert.NoError(t, err)
+
+			// Verify if number of messages in toBuffer is 10 (which is maxlength and hence buffer is full).
+			for streamInfo.State.Msgs != 10 {
+				streamInfo, _ = to1js.StreamInfo(toStreamName)
+				if streamInfo.State.Msgs == 10 {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					t.Fatalf("expected 10 msgs, %s", ctx.Err())
+				default:
+					time.Sleep(1 * time.Millisecond)
+				}
+			}
+
+			// assert toBuffer is full and all messages appear in toBuffer
+			time.Sleep(2 * time.Second) // wait for isFull check.
+			assert.True(t, to1.isFull.Load())
+
+			fromStepJs, err := fromStep.client.JetStreamContext()
+			assert.NoError(t, err)
+			fromStepInfo, err := fromStepJs.StreamInfo(streamName)
+			assert.NoError(t, err)
+			// Make sure all messages are cleared up from buffer as DiscardOldPolicy is false
+			assert.Equal(t, uint64(0), fromStepInfo.State.Msgs)
+
+			// Call stop to end the test as we have a blocking read. The forwarder is up and running with no messages written
+			f.Stop()
+
+			<-stopped
+		})
 	}
-
-	// assert toBuffer is full and all messages appear in toBuffer
-	time.Sleep(2 * time.Second) // wait for isFull check.
-	assert.True(t, to1.isFull.Load())
-
-	fromStepJs, err := fromStep.conn.JetStream()
-	assert.NoError(t, err)
-	fromStepInfo, err := fromStepJs.StreamInfo(streamName)
-	assert.NoError(t, err)
-	// Make sure all messages are cleared up from buffer as DiscardOldPolicy is false
-	assert.Equal(t, uint64(0), fromStepInfo.State.Msgs)
-
-	// Call stop to end the test as we have a blocking read. The forwarder is up and running with no messages written
-	f.Stop()
-
-	<-stopped
 }
 
 // TestJetStreamBufferWrite on buffer full
@@ -166,17 +198,15 @@ func TestJetStreamBufferWriterBufferFull(t *testing.T) {
 	defer cancel()
 
 	defaultJetStreamClient := natstest.JetStreamClient(t, s)
-	conn, err := defaultJetStreamClient.Connect(ctx)
-	assert.NoError(t, err)
-	defer conn.Close()
-	js, err := conn.JetStream()
+	defer defaultJetStreamClient.Close()
+	js, err := defaultJetStreamClient.JetStreamContext()
 	assert.NoError(t, err)
 
 	streamName := "TestJetStreamBufferWriterBufferFull"
 	addStream(t, js, streamName)
 	defer deleteStream(js, streamName)
 
-	bw, err := NewJetStreamBufferWriter(ctx, defaultJetStreamClient, streamName, streamName, streamName, WithMaxLength(10), WithBufferUsageLimit(0.2))
+	bw, err := NewJetStreamBufferWriter(ctx, defaultJetStreamClient, streamName, streamName, streamName, defaultPartitionIdx, WithMaxLength(10), WithBufferUsageLimit(0.2))
 	assert.NoError(t, err)
 	jw, _ := bw.(*jetStreamWriter)
 	defer jw.Close()
@@ -225,17 +255,15 @@ func TestJetStreamBufferWriterBufferFull_DiscardLatest(t *testing.T) {
 	defer cancel()
 
 	defaultJetStreamClient := natstest.JetStreamClient(t, s)
-	conn, err := defaultJetStreamClient.Connect(ctx)
-	assert.NoError(t, err)
-	defer conn.Close()
-	js, err := conn.JetStream()
+	defer defaultJetStreamClient.Close()
+	js, err := defaultJetStreamClient.JetStreamContext()
 	assert.NoError(t, err)
 
 	streamName := "TestJetStreamBufferWriterBufferFull"
 	addStream(t, js, streamName)
 	defer deleteStream(js, streamName)
 
-	bw, err := NewJetStreamBufferWriter(ctx, defaultJetStreamClient, streamName, streamName, streamName, WithMaxLength(10), WithBufferUsageLimit(0.2), WithBufferFullWritingStrategy(dfv1.DiscardLatest))
+	bw, err := NewJetStreamBufferWriter(ctx, defaultJetStreamClient, streamName, streamName, streamName, defaultPartitionIdx, WithMaxLength(10), WithBufferUsageLimit(0.2), WithBufferFullWritingStrategy(dfv1.DiscardLatest))
 	assert.NoError(t, err)
 	jw, _ := bw.(*jetStreamWriter)
 	defer jw.Close()
@@ -283,17 +311,15 @@ func TestWriteGetName(t *testing.T) {
 	defer cancel()
 
 	defaultJetStreamClient := natstest.JetStreamClient(t, s)
-	conn, err := defaultJetStreamClient.Connect(ctx)
-	assert.NoError(t, err)
-	defer conn.Close()
-	js, err := conn.JetStream()
+	defer defaultJetStreamClient.Close()
+	js, err := defaultJetStreamClient.JetStreamContext()
 	assert.NoError(t, err)
 
 	streamName := "TestWriteGetName"
 	addStream(t, js, streamName)
 	defer deleteStream(js, streamName)
 
-	bufferWriter, err := NewJetStreamBufferReader(ctx, defaultJetStreamClient, streamName, streamName, streamName)
+	bufferWriter, err := NewJetStreamBufferReader(ctx, defaultJetStreamClient, streamName, streamName, streamName, defaultPartitionIdx)
 	assert.NoError(t, err)
 
 	bw := bufferWriter.(*jetStreamReader)
@@ -311,17 +337,15 @@ func TestWriteClose(t *testing.T) {
 	defer cancel()
 
 	defaultJetStreamClient := natstest.JetStreamClient(t, s)
-	conn, err := defaultJetStreamClient.Connect(ctx)
-	assert.NoError(t, err)
-	defer conn.Close()
-	js, err := conn.JetStream()
+	defer defaultJetStreamClient.Close()
+	js, err := defaultJetStreamClient.JetStreamContext()
 	assert.NoError(t, err)
 
 	streamName := "TestWriteClose"
 	addStream(t, js, streamName)
 	defer deleteStream(js, streamName)
 
-	bufferWriter, err := NewJetStreamBufferWriter(ctx, defaultJetStreamClient, streamName, streamName, streamName)
+	bufferWriter, err := NewJetStreamBufferWriter(ctx, defaultJetStreamClient, streamName, streamName, streamName, defaultPartitionIdx)
 	assert.NoError(t, err)
 
 	bw := bufferWriter.(*jetStreamWriter)

@@ -2,7 +2,7 @@
 
 Inter-Step Buffer Service is the service to provide [Inter-Step Buffers](inter-step-buffer.md).
 
-An Inter-Step Buffer Service is described by a [Custom Resource](https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/), it is required to be existing in a namespace before Pipeline objects are created. A sample `InterStepBufferService` with JetStream implementation looks like below.
+An Inter-Step Buffer Service is described by a [Custom Resource](https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/). It is required to be existing in a namespace before Pipeline objects are created. A sample `InterStepBufferService` with JetStream implementation looks like below.
 
 ```yaml
 apiVersion: numaflow.numaproj.io/v1alpha1
@@ -14,7 +14,7 @@ spec:
     version: latest # Do NOT use "latest" but a specific version in your real deployment
 ```
 
-`InterStepBufferService` is a namespaced object, it can be used by all the Pipelines in the same namespace. By default, Pipeline objects look for an `InterStepBufferService` named `default`, so a common practice is to create an `InterStepBufferService` with the name `default`. If you give the `InterStepBufferService` a name other than `default`, then you need to give the same name in the Pipeline spec.
+`InterStepBufferService` is a namespaced object. It can be used by all the Pipelines in the same namespace. By default, Pipeline objects look for an `InterStepBufferService` named `default`, so a common practice is to create an `InterStepBufferService` with the name `default`. If you give the `InterStepBufferService` a name other than `default`, then you need to give the same name in the Pipeline spec.
 
 ```yaml
 apiVersion: numaflow.numaproj.io/v1alpha1
@@ -42,11 +42,11 @@ Property `spec.jetstream.version` is required for a JetStream `InterStepBufferSe
 
 **Note**
 
-The version `latest` in the ConfigMap should only be used for testing purpose, it's recommended to always use a fixed version in your real workload.
+The version `latest` in the ConfigMap should only be used for testing purpose. It's recommended that you always use a fixed version in your real workload.
 
 ### Replicas
 
-An optional property `spec.jetstream.replicas` (defaults to 3) can be specified, which gives the total number of nodes. An odd number 3 or 5 is suggested. If the given number < 3, 3 will be used.
+An optional property `spec.jetstream.replicas` (defaults to 3) can be specified, which gives the total number of nodes. 
 
 ### Persistence
 
@@ -81,8 +81,13 @@ There are 2 places to configure JetStream settings:
 A sample JetStream configuration:
 
 ```
+# https://docs.nats.io/running-a-nats-service/configuration#limits
+# Only "max_payload" is supported for configuration in this section.
+# Max payload size in bytes, defaults to 1 MB. It is not recommended to use values over 8MB but max_payload can be set up to 64MB.
+max_payload: 1048576
+#
 # https://docs.nats.io/running-a-nats-service/configuration#jetstream
-# Only configure "max_memory_store" or "max_file_store", do not set "store_dir" as it has been hardcoded.
+# Only configure "max_memory_store" or "max_file_store" in this section, do not set "store_dir" as it has been hardcoded.
 #
 # e.g. 1G. -1 means no limit, up to 75% of available memory. This only take effect for streams created using memory storage.
 max_memory_store: -1
@@ -184,7 +189,7 @@ An optional property `spec.redis.native.replicas` (defaults to 3) can be specifi
 
 ### Persistence
 
-Following example shows an `native` Redis `InterStepBufferService` with persistence.
+The following example shows an `native` Redis `InterStepBufferService` with persistence.
 
 ```yaml
 apiVersion: numaflow.numaproj.io/v1alpha1

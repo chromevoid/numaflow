@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -51,11 +52,12 @@ type vertexReconciler struct {
 	image  string
 	logger *zap.SugaredLogger
 
-	scaler *scaling.Scaler
+	scaler   *scaling.Scaler
+	recorder record.EventRecorder
 }
 
-func NewReconciler(client client.Client, scheme *runtime.Scheme, config *reconciler.GlobalConfig, image string, scaler *scaling.Scaler, logger *zap.SugaredLogger) reconcile.Reconciler {
-	return &vertexReconciler{client: client, scheme: scheme, config: config, image: image, scaler: scaler, logger: logger}
+func NewReconciler(client client.Client, scheme *runtime.Scheme, config *reconciler.GlobalConfig, image string, scaler *scaling.Scaler, logger *zap.SugaredLogger, recorder record.EventRecorder) reconcile.Reconciler {
+	return &vertexReconciler{client: client, scheme: scheme, config: config, image: image, scaler: scaler, logger: logger, recorder: recorder}
 }
 
 func (r *vertexReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -83,7 +85,7 @@ func (r *vertexReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return result, err
 }
 
-// reconcile does the real logic
+// reconcile does the real logic.
 func (r *vertexReconciler) reconcile(ctx context.Context, vertex *dfv1.Vertex) (ctrl.Result, error) {
 	log := logging.FromContext(ctx)
 	vertexKey := scaling.KeyOfVertex(*vertex)
@@ -140,10 +142,10 @@ func (r *vertexReconciler) reconcile(ctx context.Context, vertex *dfv1.Vertex) (
 						return ctrl.Result{}, err
 					}
 					if err := r.client.Create(ctx, newPvc); err != nil && !apierrors.IsAlreadyExists(err) {
-						log.Errorw("Error creating a PVC", zap.Error(err))
-						vertex.Status.MarkPhaseFailed("CreatePVCFailed", err.Error())
+						r.markPhaseLogEvent(vertex, log, "CreatePVCFailed", err.Error(), "Error creating a PVC", zap.Error(err))
 						return ctrl.Result{}, err
 					}
+					r.recorder.Eventf(vertex, corev1.EventTypeNormal, "CreatePVCSuccess", "Successfully created PVC %s", newPvc.Name)
 				} else {
 					if existingPvc.GetAnnotations()[dfv1.KeyHash] != hash {
 						// TODO: deal with spec difference
@@ -156,13 +158,71 @@ func (r *vertexReconciler) reconcile(ctx context.Context, vertex *dfv1.Vertex) (
 		}
 	}
 
+	// Create services
+	// Note: We purposely put service reconciliation before pod,
+	// to prevent pod reconciliation failure from blocking service creation.
+	// It's ok to keep failing to scale up/down pods (e.g., due to quota),
+	// but without services, certain platform functionalities will be broken.
+	// E.g., the vertex processing rate calculation relies on the headless service to determine the number of active pods.
+	existingSvcs, err := r.findExistingServices(ctx, vertex)
+	if err != nil {
+		log.Errorw("Failed to find existing services", zap.Error(err))
+		vertex.Status.MarkPhaseFailed("FindExistingSvcsFailed", err.Error())
+		return ctrl.Result{}, err
+	}
+	for _, s := range vertex.GetServiceObjs() {
+		svcHash := sharedutil.MustHash(s.Spec)
+		s.Annotations = map[string]string{dfv1.KeyHash: svcHash}
+		needToCreate := false
+		if existingSvc, existing := existingSvcs[s.Name]; existing {
+			if existingSvc.GetAnnotations()[dfv1.KeyHash] != svcHash {
+				if err := r.client.Delete(ctx, &existingSvc); err != nil {
+					if !apierrors.IsNotFound(err) {
+						r.markPhaseLogEvent(vertex, log, "DelSvcFailed", err.Error(), "Failed to delete existing service", zap.String("service", existingSvc.Name), zap.Error(err))
+						return ctrl.Result{}, err
+					}
+				} else {
+					log.Infow("Deleted a stale service to recreate", zap.String("service", existingSvc.Name))
+					r.recorder.Eventf(vertex, corev1.EventTypeNormal, "DelSvcSuccess", "Deleted stale service %s to recreate", existingSvc.Name)
+				}
+				needToCreate = true
+			}
+			delete(existingSvcs, s.Name)
+		} else {
+			needToCreate = true
+		}
+		if needToCreate {
+			if err := r.client.Create(ctx, s); err != nil {
+				if apierrors.IsAlreadyExists(err) {
+					continue
+				}
+				r.markPhaseLogEvent(vertex, log, "CreateSvcFailed", err.Error(), "Failed to create a service", zap.String("service", s.Name), zap.Error(err))
+				return ctrl.Result{}, err
+			} else {
+				log.Infow("Succeeded to create a service", zap.String("service", s.Name))
+				r.recorder.Eventf(vertex, corev1.EventTypeNormal, "CreateSvcSuccess", "Succeeded to create service %s", s.Name)
+			}
+		}
+	}
+	for _, v := range existingSvcs { // clean up stale services
+		if err := r.client.Delete(ctx, &v); err != nil {
+			if !apierrors.IsNotFound(err) {
+				r.markPhaseLogEvent(vertex, log, "DelSvcFailed", err.Error(), "Failed to delete service not in use", zap.String("service", v.Name), zap.Error(err))
+				return ctrl.Result{}, err
+			}
+		} else {
+			log.Infow("Deleted a stale service", zap.String("service", v.Name))
+			r.recorder.Eventf(vertex, corev1.EventTypeNormal, "DelSvcSuccess", "Deleted stale service %s", v.Name)
+		}
+	}
+
 	pipeline := &dfv1.Pipeline{}
 	if err := r.client.Get(ctx, types.NamespacedName{Namespace: vertex.Namespace, Name: vertex.Spec.PipelineName}, pipeline); err != nil {
 		log.Errorw("Failed to get pipeline object", zap.Error(err))
 		vertex.Status.MarkPhaseFailed("GetPipelineFailed", err.Error())
 		return ctrl.Result{}, err
 	}
-
+	// Create pods
 	existingPods, err := r.findExistingPods(ctx, vertex)
 	if err != nil {
 		log.Errorw("Failed to find existing pods", zap.Error(err))
@@ -181,7 +241,7 @@ func (r *vertexReconciler) reconcile(ctx context.Context, vertex *dfv1.Vertex) (
 		needToCreate := true
 		for existingPodName, existingPod := range existingPods {
 			if strings.HasPrefix(existingPodName, podNamePrefix) {
-				if existingPod.GetAnnotations()[dfv1.KeyHash] == hash {
+				if existingPod.GetAnnotations()[dfv1.KeyHash] == hash && existingPod.Status.Phase != corev1.PodFailed {
 					needToCreate = false
 					delete(existingPods, existingPodName)
 				}
@@ -191,6 +251,20 @@ func (r *vertexReconciler) reconcile(ctx context.Context, vertex *dfv1.Vertex) (
 		if needToCreate {
 			labels := map[string]string{}
 			annotations := map[string]string{}
+			if pipeline.Spec.Templates != nil && pipeline.Spec.Templates.VertexTemplate != nil {
+				apt := pipeline.Spec.Templates.VertexTemplate.AbstractPodTemplate
+				apt.ApplyToPodSpec(podSpec)
+				if len(apt.Metadata.Labels) > 0 {
+					for k, v := range apt.Metadata.Labels {
+						labels[k] = v
+					}
+				}
+				if len(apt.Metadata.Annotations) > 0 {
+					for k, v := range apt.Metadata.Annotations {
+						annotations[k] = v
+					}
+				}
+			}
 			if x := vertex.Spec.Metadata; x != nil {
 				for k, v := range x.Annotations {
 					annotations[k] = v
@@ -202,6 +276,7 @@ func (r *vertexReconciler) reconcile(ctx context.Context, vertex *dfv1.Vertex) (
 			labels[dfv1.KeyPartOf] = dfv1.Project
 			labels[dfv1.KeyManagedBy] = dfv1.ControllerVertex
 			labels[dfv1.KeyComponent] = dfv1.ComponentVertex
+			labels[dfv1.KeyAppName] = vertex.Name
 			labels[dfv1.KeyPipelineName] = vertex.Spec.PipelineName
 			labels[dfv1.KeyVertexName] = vertex.Spec.Name
 			annotations[dfv1.KeyHash] = hash
@@ -210,8 +285,9 @@ func (r *vertexReconciler) reconcile(ctx context.Context, vertex *dfv1.Vertex) (
 				annotations[dfv1.KeyDefaultContainer] = dfv1.CtrUdf
 			} else if vertex.IsUDSink() {
 				annotations[dfv1.KeyDefaultContainer] = dfv1.CtrUdsink
+			} else if vertex.IsUDSource() {
+				annotations[dfv1.KeyDefaultContainer] = dfv1.CtrUdsource
 			} else if vertex.HasUDTransformer() {
-				// Once we have UDSource in place, replace it with UDSource?
 				annotations[dfv1.KeyDefaultContainer] = dfv1.CtrUdtransformer
 			}
 			pod := &corev1.Pod{
@@ -226,17 +302,16 @@ func (r *vertexReconciler) reconcile(ctx context.Context, vertex *dfv1.Vertex) (
 			}
 			pod.Spec.Hostname = fmt.Sprintf("%s-%d", vertex.Name, replica)
 			if err := r.client.Create(ctx, pod); err != nil {
-				log.Errorw("Failed to create pod", zap.String("pod", pod.Name), zap.Error(err))
-				vertex.Status.MarkPhaseFailed("CreatePodFailed", err.Error())
+				r.markPhaseLogEvent(vertex, log, "CreatePodFailed", err.Error(), "Failed to created pod", zap.Error(err))
 				return ctrl.Result{}, err
 			}
 			log.Infow("Succeeded to create a pod", zap.String("pod", pod.Name))
+			r.recorder.Eventf(vertex, corev1.EventTypeNormal, "CreatePodSuccess", "Succeeded to create pod %s", pod.Name)
 		}
 	}
 	for _, v := range existingPods {
 		if err := r.client.Delete(ctx, &v); err != nil && !apierrors.IsNotFound(err) {
-			log.Errorw("Failed to delete pod", zap.String("pod", v.Name), zap.Error(err))
-			vertex.Status.MarkPhaseFailed("DelPodFailed", err.Error())
+			r.markPhaseLogEvent(vertex, log, "DelPodFailed", err.Error(), "Failed to delete pod", zap.Error(err))
 			return ctrl.Result{}, err
 		}
 	}
@@ -244,64 +319,12 @@ func (r *vertexReconciler) reconcile(ctx context.Context, vertex *dfv1.Vertex) (
 	currentReplicas := int(vertex.Status.Replicas)
 	if currentReplicas != desiredReplicas || vertex.Status.Selector == "" {
 		log.Infow("Replicas changed", "currentReplicas", currentReplicas, "desiredReplicas", desiredReplicas)
+		r.recorder.Eventf(vertex, corev1.EventTypeNormal, "ReplicasScaled", "Replicas changed from %d to %d", currentReplicas, desiredReplicas)
 		vertex.Status.Replicas = uint32(desiredReplicas)
 		vertex.Status.LastScaledAt = metav1.Time{Time: time.Now()}
 	}
 	selector, _ := labels.Parse(dfv1.KeyPipelineName + "=" + vertex.Spec.PipelineName + "," + dfv1.KeyVertexName + "=" + vertex.Spec.Name)
 	vertex.Status.Selector = selector.String()
-
-	// create services
-	existingSvcs, err := r.findExistingServices(ctx, vertex)
-	if err != nil {
-		log.Errorw("Failed to find existing services", zap.Error(err))
-		vertex.Status.MarkPhaseFailed("FindExistingSvcsFailed", err.Error())
-		return ctrl.Result{}, err
-	}
-	for _, s := range vertex.GetServiceObjs() {
-		svcHash := sharedutil.MustHash(s.Spec)
-		s.Annotations = map[string]string{dfv1.KeyHash: svcHash}
-		needToCreate := false
-		if existingSvc, existing := existingSvcs[s.Name]; existing {
-			if existingSvc.GetAnnotations()[dfv1.KeyHash] != svcHash {
-				if err := r.client.Delete(ctx, &existingSvc); err != nil {
-					if !apierrors.IsNotFound(err) {
-						log.Errorw("Failed to delete existing service", zap.String("service", existingSvc.Name), zap.Error(err))
-						vertex.Status.MarkPhaseFailed("DelSvcFailed", err.Error())
-						return ctrl.Result{}, err
-					}
-				} else {
-					log.Infow("Deleted a stale service to recreate", zap.String("service", existingSvc.Name))
-				}
-				needToCreate = true
-			}
-			delete(existingSvcs, s.Name)
-		} else {
-			needToCreate = true
-		}
-		if needToCreate {
-			if err := r.client.Create(ctx, s); err != nil {
-				if apierrors.IsAlreadyExists(err) {
-					continue
-				}
-				log.Errorw("Failed to create a service", zap.String("service", s.Name), zap.Error(err))
-				vertex.Status.MarkPhaseFailed("CreateSvcFailed", err.Error())
-				return ctrl.Result{}, err
-			} else {
-				log.Infow("Succeeded to create a service", zap.String("service", s.Name))
-			}
-		}
-	}
-	for _, v := range existingSvcs { // clean up stale services
-		if err := r.client.Delete(ctx, &v); err != nil {
-			if !apierrors.IsNotFound(err) {
-				log.Errorw("Failed to delete service not in use", zap.String("service", v.Name), zap.Error(err))
-				vertex.Status.MarkPhaseFailed("DelSvcFailed", err.Error())
-				return ctrl.Result{}, err
-			}
-		} else {
-			log.Infow("Deleted a stale service", zap.String("service", v.Name))
-		}
-	}
 
 	vertex.Status.MarkPhaseRunning()
 	return ctrl.Result{}, nil
@@ -329,13 +352,22 @@ func (r *vertexReconciler) buildReduceVertexPVCSpec(vertex *dfv1.Vertex, replica
 func (r *vertexReconciler) buildPodSpec(vertex *dfv1.Vertex, pl *dfv1.Pipeline, isbSvcConfig dfv1.BufferServiceConfig, replicaIndex int) (*corev1.PodSpec, error) {
 	isbSvcType, envs := sharedutil.GetIsbSvcEnvVars(isbSvcConfig)
 	podSpec, err := vertex.GetPodSpec(dfv1.GetVertexPodSpecReq{
-		ISBSvcType: isbSvcType,
-		Image:      r.image,
-		PullPolicy: corev1.PullPolicy(sharedutil.LookupEnvStringOr(dfv1.EnvImagePullPolicy, "")),
-		Env:        envs,
+		ISBSvcType:          isbSvcType,
+		Image:               r.image,
+		PullPolicy:          corev1.PullPolicy(sharedutil.LookupEnvStringOr(dfv1.EnvImagePullPolicy, "")),
+		Env:                 envs,
+		SideInputsStoreName: pl.GetSideInputsStoreName(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate pod spec, error: %w", err)
+	}
+
+	if pl.Spec.Templates != nil && pl.Spec.Templates.VertexTemplate != nil && pl.Spec.Templates.VertexTemplate.ContainerTemplate != nil {
+		pl.Spec.Templates.VertexTemplate.ContainerTemplate.ApplyToNumaflowContainers(podSpec.Containers)
+	}
+
+	if pl.Spec.Templates != nil && pl.Spec.Templates.VertexTemplate != nil && pl.Spec.Templates.VertexTemplate.InitContainerTemplate != nil {
+		pl.Spec.Templates.VertexTemplate.InitContainerTemplate.ApplyToNumaflowContainers(podSpec.InitContainers)
 	}
 
 	// Attach secret or configmap volumes if any
@@ -368,21 +400,18 @@ func (r *vertexReconciler) buildPodSpec(vertex *dfv1.Vertex, pl *dfv1.Pipeline, 
 		})
 	}
 
-	bfs := []string{}
-	// Only source vertices need to check all the pipeline buffers
+	var bfs []string
+	var bks []string
+	// Only source vertices need to check all the pipeline buffers and buckets
 	if vertex.IsASource() {
-		for _, b := range pl.GetAllBuffers() {
-			bfs = append(bfs, fmt.Sprintf("%s=%s", b.Name, b.Type))
-		}
+		bfs = append(bfs, pl.GetAllBuffers()...)
+		bks = append(bks, pl.GetAllBuckets()...)
 	} else {
-		for _, b := range vertex.GetFromBuffers() {
-			bfs = append(bfs, fmt.Sprintf("%s=%s", b.Name, b.Type))
-		}
-		for _, b := range vertex.GetToBuffers() {
-			bfs = append(bfs, fmt.Sprintf("%s=%s", b.Name, b.Type))
-		}
+		bfs = append(bfs, vertex.OwnedBuffers()...)
+		bks = append(bks, vertex.GetFromBuckets()...)
+		bks = append(bks, vertex.GetToBuckets()...)
 	}
-	podSpec.InitContainers[0].Args = append(podSpec.InitContainers[0].Args, "--buffers="+strings.Join(bfs, ","))
+	podSpec.InitContainers[0].Args = append(podSpec.InitContainers[0].Args, "--buffers="+strings.Join(bfs, ","), "--buckets="+strings.Join(bks, ","))
 	return podSpec, nil
 }
 
@@ -394,6 +423,10 @@ func (r *vertexReconciler) findExistingPods(ctx context.Context, vertex *dfv1.Ve
 	}
 	result := make(map[string]corev1.Pod)
 	for _, v := range pods.Items {
+		if !v.DeletionTimestamp.IsZero() {
+			// Ignore pods being deleted
+			continue
+		}
 		result[v.Name] = v
 	}
 	return result, nil
@@ -410,4 +443,11 @@ func (r *vertexReconciler) findExistingServices(ctx context.Context, vertex *dfv
 		result[v.Name] = v
 	}
 	return result, nil
+}
+
+// helper function for warning event types
+func (r *vertexReconciler) markPhaseLogEvent(vertex *dfv1.Vertex, log *zap.SugaredLogger, reason, message, logMsg string, logWith ...interface{}) {
+	log.Errorw(logMsg, logWith)
+	vertex.Status.MarkPhaseFailed(reason, message)
+	r.recorder.Event(vertex, corev1.EventTypeWarning, reason, message)
 }

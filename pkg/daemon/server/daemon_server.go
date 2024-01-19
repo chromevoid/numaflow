@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/pprof"
+	"os"
 	"time"
 
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
@@ -36,6 +38,7 @@ import (
 	"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 	"github.com/numaproj/numaflow/pkg/apis/proto/daemon"
 	"github.com/numaproj/numaflow/pkg/daemon/server/service"
+	server "github.com/numaproj/numaflow/pkg/daemon/server/service/rater"
 	"github.com/numaproj/numaflow/pkg/isbsvc"
 	jsclient "github.com/numaproj/numaflow/pkg/shared/clients/nats"
 	redisclient "github.com/numaproj/numaflow/pkg/shared/clients/redis"
@@ -45,26 +48,39 @@ import (
 )
 
 type daemonServer struct {
-	pipeline   *v1alpha1.Pipeline
-	isbSvcType v1alpha1.ISBSvcType
+	pipeline      *v1alpha1.Pipeline
+	isbSvcType    v1alpha1.ISBSvcType
+	metaDataQuery *service.PipelineMetadataQuery
 }
 
 func NewDaemonServer(pl *v1alpha1.Pipeline, isbSvcType v1alpha1.ISBSvcType) *daemonServer {
 	return &daemonServer{
-		pipeline:   pl,
-		isbSvcType: isbSvcType,
+		pipeline:      pl,
+		isbSvcType:    isbSvcType,
+		metaDataQuery: nil,
 	}
 }
 
 func (ds *daemonServer) Run(ctx context.Context) error {
 	log := logging.FromContext(ctx)
-	var isbSvcClient isbsvc.ISBService
-	var err error
+	var (
+		isbSvcClient   isbsvc.ISBService
+		err            error
+		natsClientPool *jsclient.ClientPool
+	)
+
+	natsClientPool, err = jsclient.NewClientPool(ctx, jsclient.WithClientPoolSize(1))
+	defer natsClientPool.CloseAll()
+
+	if err != nil {
+		log.Errorw("Failed to get a NATS client pool.", zap.Error(err))
+		return err
+	}
 	switch ds.isbSvcType {
 	case v1alpha1.ISBSvcTypeRedis:
 		isbSvcClient = isbsvc.NewISBRedisSvc(redisclient.NewInClusterRedisClient())
 	case v1alpha1.ISBSvcTypeJetStream:
-		isbSvcClient, err = isbsvc.NewISBJetStreamSvc(ds.pipeline.Name, isbsvc.WithJetStreamClient(jsclient.NewInClusterJetStreamClient()))
+		isbSvcClient, err = isbsvc.NewISBJetStreamSvc(ds.pipeline.Name, isbsvc.WithJetStreamClient(natsClientPool.NextAvailableClient()))
 		if err != nil {
 			log.Errorw("Failed to get an ISB Service client.", zap.Error(err))
 			return err
@@ -72,20 +88,26 @@ func (ds *daemonServer) Run(ctx context.Context) error {
 	default:
 		return fmt.Errorf("unsupported isbsvc buffer type %q", ds.isbSvcType)
 	}
-	wmFetchers, err := service.GetEdgeWatermarkFetchers(ctx, ds.pipeline, isbSvcClient)
+	wmStores, err := service.BuildWatermarkStores(ctx, ds.pipeline, isbSvcClient)
+	if err != nil {
+		return fmt.Errorf("failed to get watermark stores, %w", err)
+	}
+	wmFetchers, err := service.BuildUXEdgeWatermarkFetchers(ctx, ds.pipeline, wmStores)
 	if err != nil {
 		return fmt.Errorf("failed to get watermark fetchers, %w", err)
 	}
 
+	// Close all the watermark stores when the daemon server exits
 	defer func() {
-		for _, fetcherList := range wmFetchers {
-			for _, f := range fetcherList {
-				if err := f.Close(); err != nil {
-					log.Errorw("Failed to close watermark fetcher", zap.Error(err))
-				}
+		for _, edgeStores := range wmStores {
+			for _, store := range edgeStores {
+				_ = store.Close()
 			}
 		}
 	}()
+
+	// rater is used to calculate the processing rate for each of the vertices
+	rater := server.NewRater(ctx, ds.pipeline)
 
 	// Start listener
 	var conn net.Listener
@@ -102,7 +124,7 @@ func (ds *daemonServer) Run(ctx context.Context) error {
 	}
 
 	tlsConfig := &tls.Config{Certificates: []tls.Certificate{*cer}, MinVersion: tls.VersionTLS12}
-	grpcServer, err := ds.newGRPCServer(isbSvcClient, wmFetchers)
+	grpcServer, err := ds.newGRPCServer(isbSvcClient, wmFetchers, rater)
 	if err != nil {
 		return fmt.Errorf("failed to create grpc server: %w", err)
 	}
@@ -118,12 +140,25 @@ func (ds *daemonServer) Run(ctx context.Context) error {
 	go func() { _ = httpServer.Serve(httpL) }()
 	go func() { _ = tcpm.Serve() }()
 
+	// Start the Data flow health status updater
+	go func() {
+		ds.metaDataQuery.StartHealthCheck(ctx)
+	}()
+
 	log.Infof("Daemon server started successfully on %s", address)
+	// Start the rater
+	if err := rater.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start the rater: %w", err)
+	}
+
 	<-ctx.Done()
 	return nil
 }
 
-func (ds *daemonServer) newGRPCServer(isbSvcClient isbsvc.ISBService, wmFetchers map[string][]fetch.Fetcher) (*grpc.Server, error) {
+func (ds *daemonServer) newGRPCServer(
+	isbSvcClient isbsvc.ISBService,
+	wmFetchers map[v1alpha1.Edge][]fetch.HeadFetcher,
+	rater server.Ratable) (*grpc.Server, error) {
 	// "Prometheus histograms are a great way to measure latency distributions of your RPCs.
 	// However, since it is a bad practice to have metrics of high cardinality the latency monitoring metrics are disabled by default.
 	// To enable them please call the following in your server initialization code:"
@@ -137,11 +172,12 @@ func (ds *daemonServer) newGRPCServer(isbSvcClient isbsvc.ISBService, wmFetchers
 	}
 	grpcServer := grpc.NewServer(sOpts...)
 	grpc_prometheus.Register(grpcServer)
-	pipelineMetadataQuery, err := service.NewPipelineMetadataQuery(isbSvcClient, ds.pipeline, wmFetchers)
+	pipelineMetadataQuery, err := service.NewPipelineMetadataQuery(isbSvcClient, ds.pipeline, wmFetchers, rater)
 	if err != nil {
 		return nil, err
 	}
 	daemon.RegisterDaemonServiceServer(grpcServer, pipelineMetadataQuery)
+	ds.metaDataQuery = pipelineMetadataQuery
 	return grpcServer, nil
 }
 
@@ -182,6 +218,15 @@ func (ds *daemonServer) newHTTPServer(ctx context.Context, port int, tlsConfig *
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.Handle("/metrics", promhttp.Handler())
-
+	pprofEnabled := os.Getenv(v1alpha1.EnvDebug) == "true" || os.Getenv(v1alpha1.EnvPPROF) == "true"
+	if pprofEnabled {
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	} else {
+		log.Info("Not enabling pprof debug endpoints")
+	}
 	return &httpServer
 }

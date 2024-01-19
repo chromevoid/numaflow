@@ -23,11 +23,11 @@ import (
 )
 
 func TestOptions(t *testing.T) {
-	testOpts := []ProcessorManagerOption{
+	testOpts := []Option{
 		WithPodHeartbeatRate(10),
 		WithRefreshingProcessorsRate(15),
 	}
-	opts := &processorManagerOptions{
+	opts := &options{
 		podHeartbeatRate:         5,
 		refreshingProcessorsRate: 5,
 	}

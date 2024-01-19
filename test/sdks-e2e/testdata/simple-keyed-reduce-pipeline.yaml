@@ -12,13 +12,14 @@ spec:
         min: 1
       udf:
         container:
-          # Tell the input number is even or odd, see https://github.com/numaproj/numaflow-java/tree/main/examples/src/main/java/io/numaproj/numaflow/examples/function/evenodd
-          image: quay.io/numaio/numaflow-java/even-odd
+          # Tell the input number is even or odd, see https://github.com/numaproj/numaflow-java/tree/main/examples/src/main/java/io/numaproj/numaflow/examples/map/evenodd
+          image: quay.io/numaio/numaflow-java/even-odd:v0.6.0
     - name: compute-sum
+      partitions: 2
       udf:
         container:
-          # compute the sum, see https://github.com/numaproj/numaflow-java/tree/main/examples/src/main/java/io/numaproj/numaflow/examples/function/sum
-          image: quay.io/numaio/numaflow-java/reduce-sum
+          # compute the sum, see https://github.com/numaproj/numaflow-java/tree/main/examples/src/main/java/io/numaproj/numaflow/examples/reduce/sum
+          image: quay.io/numaio/numaflow-java/reduce-sum:v0.6.1
         groupBy:
           window:
             fixed:
@@ -27,16 +28,17 @@ spec:
           storage:
             emptyDir: {}
     - name: java-udsink
+      scale:
+        min: 1
       sink:
         udsink:
           container:
             # https://github.com/numaproj/numaflow-java/tree/main/examples/src/main/java/io/numaproj/numaflow/examples/sink/simple
-            image: quay.io/numaio/numaflow-java/simple-sink
+            image: quay.io/numaio/numaflow-java/simple-sink:v0.6.0
   edges:
     - from: in
       to: atoi
     - from: atoi
       to: compute-sum
-      parallelism: 2
     - from: compute-sum
       to: java-udsink

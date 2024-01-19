@@ -1,5 +1,6 @@
 SHELL:=/bin/bash
 
+PACKAGE=github.com/numaproj/numaflow
 CURRENT_DIR=$(shell pwd)
 DIST_DIR=${CURRENT_DIR}/dist
 BINARY_NAME:=numaflow
@@ -105,24 +106,35 @@ test-coverage-with-isb:
 test-code:
 	go test -tags=isb_redis -race -v $(shell go list ./... | grep -v /vendor/ | grep -v /numaflow/test/) -timeout 120s
 
-test-e2e-suite-1:
-test-e2e-suite-2:
+test-e2e:
 test-kafka-e2e:
 test-http-e2e:
 test-nats-e2e:
-test-redis-streams-e2e:
 test-sdks-e2e:
 test-reduce-e2e:
-test-%: 
+test-api-e2e:
+test-udsource-e2e:
+test-transformer-e2e:
+test-diamond-e2e:
+test-sideinputs-e2e:
+test-%:
 	$(MAKE) cleanup-e2e
 	$(MAKE) image e2eapi-image
-	kubectl -n numaflow-system delete po -lapp.kubernetes.io/component=controller-manager,app.kubernetes.io/part-of=numaflow
-	kubectl -n numaflow-system delete po e2e-api-pod  --ignore-not-found=true
-	cat test/manifests/e2e-api-pod.yaml |  sed 's@quay.io/numaproj/@$(IMAGE_NAMESPACE)/@' | sed 's/:$(BASE_VERSION)/:$(VERSION)/' | kubectl -n numaflow-system apply -f -
+	$(MAKE) restart-control-plane-components
+	kubectl -n numaflow-system delete po e2e-api-pod --ignore-not-found=true
+	cat test/manifests/e2e-api-pod.yaml |  sed 's@quay.io/numaproj/@$(IMAGE_NAMESPACE)/@' | sed 's/:latest/:$(VERSION)/' | kubectl -n numaflow-system apply -f -
 	go generate $(shell find ./test/$* -name '*.go')
-	go test -v -timeout 10m -count 1 --tags test -p 1 ./test/$*
+	go test -v -timeout 15m -count 1 --tags test -p 1 ./test/$*
 	$(MAKE) cleanup-e2e
-	
+
+image-restart:
+	$(MAKE) image
+	$(MAKE) restart-control-plane-components
+
+restart-control-plane-components:
+	kubectl -n numaflow-system delete po -lapp.kubernetes.io/component=controller-manager,app.kubernetes.io/part-of=numaflow --ignore-not-found=true
+	kubectl -n numaflow-system delete po -lapp.kubernetes.io/component=numaflow-ux,app.kubernetes.io/part-of=numaflow --ignore-not-found=true
+	kubectl -n numaflow-system delete po -lapp.kubernetes.io/component=numaflow-webhook,app.kubernetes.io/part-of=numaflow --ignore-not-found=true
 
 .PHONY: cleanup-e2e
 cleanup-e2e:
@@ -139,8 +151,8 @@ Test%:
 	$(MAKE) image e2eapi-image
 	kubectl -n numaflow-system delete po -lapp.kubernetes.io/component=controller-manager,app.kubernetes.io/part-of=numaflow
 	kubectl -n numaflow-system delete po e2e-api-pod  --ignore-not-found=true
-	cat test/manifests/e2e-api-pod.yaml |  sed 's@quay.io/numaproj/@$(IMAGE_NAMESPACE)/@' | sed 's/:$(BASE_VERSION)/:$(VERSION)/' | kubectl -n numaflow-system apply -f -
-	-go test -v -timeout 10m -count 1 --tags test -p 1 ./test/e2e-suite-1  -run='.*/$*'
+	cat test/manifests/e2e-api-pod.yaml |  sed 's@quay.io/numaproj/@$(IMAGE_NAMESPACE)/@' | sed 's/:latest/:$(VERSION)/' | kubectl -n numaflow-system apply -f -
+	-go test -v -timeout 15m -count 1 --tags test -p 1 ./test/$(shell grep $(*) -R ./test | head -1 | awk -F\/ '{print $$3}' ) -run='.*/$*'
 	$(MAKE) cleanup-e2e
 
 .PHONY: ui-build
@@ -201,9 +213,11 @@ manifests: crds
 	kubectl kustomize config/advanced-install/namespaced-numaflow-server > config/advanced-install/namespaced-numaflow-server.yaml
 	kubectl kustomize config/advanced-install/numaflow-server > config/advanced-install/numaflow-server.yaml
 	kubectl kustomize config/advanced-install/minimal-crds > config/advanced-install/minimal-crds.yaml
+	kubectl kustomize config/advanced-install/numaflow-dex-server > config/advanced-install/numaflow-dex-server.yaml
+	kubectl kustomize config/extensions/webhook > config/validating-webhook-install.yaml
 
 $(GOPATH)/bin/golangci-lint:
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b `go env GOPATH`/bin v1.49.0
+	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b `go env GOPATH`/bin v1.54.1
 
 .PHONY: lint
 lint: $(GOPATH)/bin/golangci-lint
@@ -213,6 +227,7 @@ lint: $(GOPATH)/bin/golangci-lint
 .PHONY: start
 start: image
 	kubectl apply -f test/manifests/numaflow-ns.yaml
+	kubectl -n numaflow-system delete cm numaflow-cmd-params-config --ignore-not-found=true
 	kubectl kustomize test/manifests | sed 's@quay.io/numaproj/@$(IMAGE_NAMESPACE)/@' | sed 's/:$(BASE_VERSION)/:$(VERSION)/' | kubectl -n numaflow-system apply -l app.kubernetes.io/part-of=numaflow --prune=false --force -f -
 	kubectl -n numaflow-system wait -lapp.kubernetes.io/part-of=numaflow --for=condition=Ready --timeout 60s pod --all
 
@@ -227,15 +242,28 @@ endif
 /usr/local/bin/mkdocs:
 	$(PYTHON) -m pip install mkdocs==1.3.0 mkdocs_material==8.3.9 mkdocs-embed-external-markdown==2.3.0
 
+/usr/local/bin/lychee:
+ifeq (, $(shell which lychee))
+ifeq ($(shell uname),Darwin)
+	brew install lychee
+else
+	curl -sSfL https://github.com/lycheeverse/lychee/releases/download/v0.13.0/lychee-v0.13.0-$(shell uname -m)-unknown-linux-gnu.tar.gz | sudo tar xz -C /usr/local/bin/
+endif
+endif
+
 # docs
 
 .PHONY: docs
-docs: /usr/local/bin/mkdocs
+docs: /usr/local/bin/mkdocs docs-linkcheck
 	mkdocs build
 
 .PHONY: docs-serve
 docs-serve: docs
 	mkdocs serve
+
+.PHONY: docs-linkcheck
+docs-linkcheck: /usr/local/bin/lychee
+	lychee --exclude-path=CHANGELOG.md --exclude-mail *.md --include "https://github.com/numaproj/*" $(shell find ./test -type f) $(wildcard ./docs/*.md)
 
 # pre-push checks
 
@@ -285,12 +313,16 @@ check-version-warning:
 
 .PHONY: update-manifests-version
 update-manifests-version:
-	cat config/base/kustomization.yaml | sed 's/newTag: .*/newTag: $(VERSION)/' | sed 's@value: quay.io/numaproj/numaflow:.*@value: quay.io/numaproj/numaflow:$(VERSION)@' > /tmp/base_kustomization.yaml
-	mv /tmp/base_kustomization.yaml config/base/kustomization.yaml
-	cat config/advanced-install/namespaced-controller/kustomization.yaml | sed 's/newTag: .*/newTag: $(VERSION)/' | sed 's@value: quay.io/numaproj/numaflow:.*@value: quay.io/numaproj/numaflow:$(VERSION)@' > /tmp/base_kustomization.yaml
-	mv /tmp/base_kustomization.yaml config/advanced-install/namespaced-controller/kustomization.yaml
-	cat config/advanced-install/numaflow-server/kustomization.yaml | sed 's/newTag: .*/newTag: $(VERSION)/' | sed 's@value: quay.io/numaproj/numaflow:.*@value: quay.io/numaproj/numaflow:$(VERSION)@' > /tmp/base_kustomization.yaml
-	mv /tmp/base_kustomization.yaml config/advanced-install/numaflow-server/kustomization.yaml
+	cat config/base/kustomization.yaml | sed 's/newTag: .*/newTag: $(VERSION)/' | sed 's@value: quay.io/numaproj/numaflow:.*@value: quay.io/numaproj/numaflow:$(VERSION)@' > /tmp/tmp_kustomization.yaml
+	mv /tmp/tmp_kustomization.yaml config/base/kustomization.yaml
+	cat config/advanced-install/namespaced-controller/kustomization.yaml | sed 's/newTag: .*/newTag: $(VERSION)/' | sed 's@value: quay.io/numaproj/numaflow:.*@value: quay.io/numaproj/numaflow:$(VERSION)@' > /tmp/tmp_kustomization.yaml
+	mv /tmp/tmp_kustomization.yaml config/advanced-install/namespaced-controller/kustomization.yaml
+	cat config/advanced-install/namespaced-numaflow-server/kustomization.yaml | sed 's/newTag: .*/newTag: $(VERSION)/' | sed 's@value: quay.io/numaproj/numaflow:.*@value: quay.io/numaproj/numaflow:$(VERSION)@' > /tmp/tmp_kustomization.yaml
+	mv /tmp/tmp_kustomization.yaml config/advanced-install/namespaced-numaflow-server/kustomization.yaml
+	cat config/advanced-install/numaflow-server/kustomization.yaml | sed 's/newTag: .*/newTag: $(VERSION)/' | sed 's@value: quay.io/numaproj/numaflow:.*@value: quay.io/numaproj/numaflow:$(VERSION)@' > /tmp/tmp_kustomization.yaml
+	mv /tmp/tmp_kustomization.yaml config/advanced-install/numaflow-server/kustomization.yaml
+	cat config/extensions/webhook/kustomization.yaml | sed 's/newTag: .*/newTag: $(VERSION)/' | sed 's@value: quay.io/numaproj/numaflow:.*@value: quay.io/numaproj/numaflow:$(VERSION)@' > /tmp/tmp_kustomization.yaml
+	mv /tmp/tmp_kustomization.yaml config/extensions/webhook/kustomization.yaml
 	cat Makefile | sed 's/^VERSION?=.*/VERSION?=$(VERSION)/' | sed 's/^BASE_VERSION:=.*/BASE_VERSION:=$(VERSION)/' > /tmp/ae_makefile
 	mv /tmp/ae_makefile Makefile
 

@@ -1,6 +1,6 @@
 # Map UDF
 
-Map in a Map vertex takes an input and returns 0, 1, or more outputs. Map is an element wise operator.
+Map in a Map vertex takes an input and returns 0, 1, or more outputs (also known as flat-map operation). Map is an element wise operator.
 
 ## Builtin UDF
 
@@ -8,33 +8,13 @@ There are some [Built-in Functions](builtin-functions/README.md) that can be use
 
 ## Build Your Own UDF
 
-You can build your own UDF in multiple languages. A User Defined Function could be as simple as below in Golang.
-
-```golang
-package main
-
-import (
-	"context"
-
-	functionsdk "github.com/numaproj/numaflow-go/pkg/function"
-	"github.com/numaproj/numaflow-go/pkg/function/server"
-)
-
-func mapHandle(_ context.Context, keys []string, d functionsdk.Datum) functionsdk.Messages {
-	// Directly forward the input to the output
-	return functionsdk.MessagesBuilder().Append(functionsdk.NewMessage(d.Value()).WithKeys(keys))
-}
-
-func main() {
-	server.New().RegisterMapper(functionsdk.MapFunc(mapHandle)).Start(context.Background())
-}
-```
+You can build your own UDF in multiple languages.
 
 Check the links below to see the UDF examples for different languages.
 
-- [Python](https://github.com/numaproj/numaflow-python/tree/main/examples/function)
-- [Golang](https://github.com/numaproj/numaflow-go/tree/main/pkg/function/examples)
-- [Java](https://github.com/numaproj/numaflow-java/tree/main/examples/src/main/java/io/numaproj/numaflow/examples/function)
+- [Python](https://github.com/numaproj/numaflow-python/tree/main/examples/map/)
+- [Golang](https://github.com/numaproj/numaflow-go/tree/main/pkg/mapper/examples/)
+- [Java](https://github.com/numaproj/numaflow-java/tree/main/examples/src/main/java/io/numaproj/numaflow/examples/map/)
 
 After building a docker image for the written UDF, specify the image as below in the vertex spec.
 
@@ -47,9 +27,37 @@ spec:
           image: my-python-udf-example:latest
 ```
 
+### Streaming Mode
+
+In cases the map function generates more than one output (e.g., flat map), the UDF can be
+configured to run in a streaming mode instead of batching, which is the default mode.
+In streaming mode, the messages will be pushed to the downstream vertices once generated
+instead of in a batch at the end. The streaming mode can be enabled by setting the annotation
+`numaflow.numaproj.io/map-stream` to `true` in the vertex spec.
+
+Note that to maintain data orderliness, we restrict the read batch size to be `1`.
+
+```yaml
+spec:
+  vertices:
+    - name: my-vertex
+      metadata:
+        annotations:
+          numaflow.numaproj.io/map-stream: "true"
+      limits:
+        # mapstreaming won't work if readBatchSize is != 1      
+        readBatchSize: 1
+```
+
+Check the links below to see the UDF examples in streaming mode for different languages.
+
+- [Python](https://github.com/numaproj/numaflow-python/tree/main/examples/mapstream/flatmap_stream/)
+- [Golang](https://github.com/numaproj/numaflow-go/tree/main/pkg/mapstreamer/examples/flatmap_stream/)
+- [Java](https://github.com/numaproj/numaflow-java/tree/main/examples/src/main/java/io/numaproj/numaflow/examples/mapstream/flatmapstream/)
+
 ### Available Environment Variables
 
-Some environment variables are available in the user defined function Pods, they might be useful in you own UDF implementation.
+Some environment variables are available in the user defined function container, they might be useful in your own UDF implementation.
 
 - `NUMAFLOW_NAMESPACE` - Namespace.
 - `NUMAFLOW_POD` - Pod name.
@@ -61,8 +69,8 @@ Some environment variables are available in the user defined function Pods, they
 
 Configuration data can be provided to the UDF container at runtime multiple ways.
 
-* [`environment variables`](../../reference/configuration/environment-variables.md)
-* `args`
-* `command`
-* [`volumes`](../../reference/configuration/volumes.md)
-* [`init containers`](../../reference/configuration/init-containers.md)
+- [`environment variables`](../../reference/configuration/environment-variables.md)
+- `args`
+- `command`
+- [`volumes`](../../reference/configuration/volumes.md)
+- [`init containers`](../../reference/configuration/init-containers.md)

@@ -49,23 +49,12 @@ var (
 func Test_ListAllEdges(t *testing.T) {
 	es := testPipeline.ListAllEdges()
 	assert.Equal(t, 2, len(es))
-	assert.Nil(t, es[0].Parallelism)
-	assert.Nil(t, es[1].Parallelism)
 	pl := testPipeline.DeepCopy()
 	pl.Spec.Vertices[1].UDF.GroupBy = &GroupBy{}
 	es = pl.ListAllEdges()
 	assert.Equal(t, 2, len(es))
-	assert.NotNil(t, es[0].Parallelism)
-	assert.Equal(t, int32(1), *es[0].Parallelism)
-	assert.Nil(t, es[1].Parallelism)
-	pl.Spec.Edges[0].Parallelism = pointer.Int32(3)
 	es = pl.ListAllEdges()
 	assert.Equal(t, 2, len(es))
-	assert.NotNil(t, es[0].Parallelism)
-	assert.Equal(t, int32(1), *es[0].Parallelism)
-	pl.Spec.Vertices[1].UDF.GroupBy.Keyed = true
-	es = pl.ListAllEdges()
-	assert.Equal(t, int32(3), *es[0].Parallelism)
 }
 
 func Test_GetToEdges(t *testing.T) {
@@ -89,15 +78,9 @@ func Test_GetFromEdges(t *testing.T) {
 
 func Test_GetAllBuffers(t *testing.T) {
 	s := testPipeline.GetAllBuffers()
-	assert.Equal(t, 4, len(s))
-	names := []string{}
-	for _, n := range s {
-		names = append(names, n.Name)
-	}
-	assert.Contains(t, names, testPipeline.Namespace+"-"+testPipeline.Name+"-input-p1")
-	assert.Contains(t, names, testPipeline.Namespace+"-"+testPipeline.Name+"-p1-output")
-	assert.Contains(t, names, testPipeline.Namespace+"-"+testPipeline.Name+"-input_SOURCE")
-	assert.Contains(t, names, testPipeline.Namespace+"-"+testPipeline.Name+"-output_SINK")
+	assert.Equal(t, 2, len(s))
+	assert.Contains(t, s, testPipeline.Namespace+"-"+testPipeline.Name+"-p1-0")
+	assert.Contains(t, s, testPipeline.Namespace+"-"+testPipeline.Name+"-output-0")
 }
 
 func Test_GetVertex(t *testing.T) {
@@ -105,15 +88,6 @@ func Test_GetVertex(t *testing.T) {
 	assert.Nil(t, v)
 	v = testPipeline.GetVertex("input")
 	assert.NotNil(t, v)
-}
-
-func Test_FindEdgeWithBuffer(t *testing.T) {
-	e := testPipeline.FindEdgeWithBuffer("nonono")
-	assert.Nil(t, e)
-	e = testPipeline.FindEdgeWithBuffer(testPipeline.Namespace + "-" + testPipeline.Name + "-input-p1")
-	assert.NotNil(t, e)
-	assert.Equal(t, "input", e.From)
-	assert.Equal(t, "p1", e.To)
 }
 
 func TestGetDaemonServiceName(t *testing.T) {
@@ -170,7 +144,7 @@ func TestGetDaemonDeploy(t *testing.T) {
 		c := testPipeline.getDaemonPodInitContainer(req)
 		assert.Equal(t, CtrInit, c.Name)
 		assert.Equal(t, req.Image, c.Image)
-		assert.Contains(t, c.Args, "isbsvc-buffer-validate")
+		assert.Contains(t, c.Args, "isbsvc-validate")
 	})
 
 	t.Run("test get deployment obj with pipeline overrides", func(t *testing.T) {
@@ -327,18 +301,26 @@ func Test_GetDownstreamEdges(t *testing.T) {
 			Edges: []Edge{
 				{From: "input", To: "p1"},
 				{From: "p1", To: "p11"},
+				{From: "p1", To: "p1"},
 				{From: "p1", To: "p2"},
 				{From: "p2", To: "output"},
 			},
 		},
 	}
 	edges := pl.GetDownstreamEdges("input")
-	assert.Equal(t, 4, len(edges))
+	assert.Equal(t, 5, len(edges))
 	assert.Equal(t, edges, pl.ListAllEdges())
-	assert.Equal(t, edges[2], Edge{From: "p1", To: "p2"})
+	assert.Equal(t, edges[2], Edge{From: "p1", To: "p1"})
+	assert.Equal(t, edges[3], Edge{From: "p1", To: "p2"})
 
 	edges = pl.GetDownstreamEdges("p1")
-	assert.Equal(t, 3, len(edges))
+	assert.Equal(t, 4, len(edges))
+
+	edges = pl.GetDownstreamEdges("p2")
+	assert.Equal(t, 1, len(edges))
+
+	edges = pl.GetDownstreamEdges("p11")
+	assert.Equal(t, 0, len(edges))
 
 	edges = pl.GetDownstreamEdges("output")
 	assert.Equal(t, 0, len(edges))
@@ -392,4 +374,58 @@ func Test_GetPipelineLimits(t *testing.T) {
 	assert.Equal(t, float64(40)/100, float64(*l.BufferUsageLimit)/100)
 	assert.Equal(t, readBatch, *l.ReadBatchSize)
 	assert.Equal(t, "5s", l.ReadTimeout.Duration.String())
+}
+
+func Test_GetAllBuckets(t *testing.T) {
+	pl := Pipeline{
+		Spec: PipelineSpec{
+			Vertices: []AbstractVertex{
+				{Name: "input", Source: &Source{}},
+				{Name: "p1"},
+				{Name: "p2"},
+				{Name: "p11"},
+				{Name: "output", Sink: &Sink{}},
+			},
+			Edges: []Edge{
+				{From: "input", To: "p1"},
+				{From: "p1", To: "p11"},
+				{From: "p1", To: "p2"},
+				{From: "p2", To: "output"},
+			},
+		},
+	}
+	buckets := pl.GetAllBuckets()
+	assert.Equal(t, 6, len(buckets))
+}
+
+func Test_FindVertexWithBuffer(t *testing.T) {
+	v := testPipeline.FindVertexWithBuffer(GenerateBufferName(testNamespace, testPipelineName, "p1", 0))
+	assert.NotNil(t, v)
+}
+
+func Test_GetSideInputManagerDeployments(t *testing.T) {
+	t.Run("side inputs not enabled", func(t *testing.T) {
+		deployments, err := testPipeline.GetSideInputsManagerDeployments(testGetSideInputDeploymentReq)
+		assert.Nil(t, err)
+		assert.Equal(t, 0, len(deployments))
+	})
+
+	t.Run("side inputs enabled", func(t *testing.T) {
+		testObj := testPipeline.DeepCopy()
+		testObj.Spec.SideInputs = []SideInput{
+			{
+				Name: "side-input-1",
+				Container: &Container{
+					Image: "side-input-1",
+				},
+				Trigger: &SideInputTrigger{
+					Schedule: "0 0 * * *",
+				},
+			},
+		}
+		deployments, err := testObj.GetSideInputsManagerDeployments(testGetSideInputDeploymentReq)
+		assert.Nil(t, err)
+		assert.Equal(t, 1, len(deployments))
+		assert.Equal(t, 2, len(deployments[0].Spec.Template.Spec.Containers))
+	})
 }

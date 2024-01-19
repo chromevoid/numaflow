@@ -22,19 +22,29 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Shopify/sarama"
+	"github.com/IBM/sarama"
 	"github.com/stretchr/testify/assert"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
-	"github.com/numaproj/numaflow/pkg/forward"
-	"github.com/numaproj/numaflow/pkg/forward/applier"
+	"github.com/numaproj/numaflow/pkg/forwarder"
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/isb/stores/simplebuffer"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
+	"github.com/numaproj/numaflow/pkg/sources/forward/applier"
 	"github.com/numaproj/numaflow/pkg/watermark/generic"
 	"github.com/numaproj/numaflow/pkg/watermark/store"
-	"github.com/numaproj/numaflow/pkg/watermark/store/noop"
+	"github.com/numaproj/numaflow/pkg/watermark/wmb"
 )
+
+type myForwardToAllTest struct {
+}
+
+func (f myForwardToAllTest) WhereTo(_ []string, _ []string) ([]forwarder.VertexBuffer, error) {
+	return []forwarder.VertexBuffer{{
+		ToVertexName:         "test",
+		ToVertexPartitionIdx: 0,
+	}}, nil
+}
 
 func TestMessageHandling(t *testing.T) {
 
@@ -44,8 +54,10 @@ func TestMessageHandling(t *testing.T) {
 	value := "testvalue"
 	keys := []string{"testkey"}
 
-	tobuffer := simplebuffer.NewInMemoryBuffer("test", 100)
-	dest := []isb.BufferWriter{tobuffer}
+	dest := simplebuffer.NewInMemoryBuffer("test", 100, 0)
+	toBuffers := map[string][]isb.BufferWriter{
+		"test": {dest},
+	}
 
 	vertex := &dfv1.Vertex{Spec: dfv1.VertexSpec{
 		PipelineName: "testPipeline",
@@ -64,9 +76,12 @@ func TestMessageHandling(t *testing.T) {
 		Hostname: "test-host",
 		Replica:  0,
 	}
-	publishWMStore := store.BuildWatermarkStore(noop.NewKVNoOpStore(), noop.NewKVNoOpStore())
-	fetchWatermark, publishWatermark := generic.BuildNoOpWatermarkProgressorsFromBufferMap(map[string]isb.BufferWriter{})
-	ks, _ := NewKafkaSource(vi, dest, forward.All, applier.Terminal, fetchWatermark, publishWatermark, publishWMStore, WithLogger(logging.NewLogger()),
+	publishWMStore, _ := store.BuildNoOpWatermarkStore()
+	fetchWatermark, _ := generic.BuildNoOpSourceWatermarkProgressorsFromBufferMap(map[string][]isb.BufferWriter{})
+	toVertexWmStores := map[string]store.WatermarkStore{
+		"test": publishWMStore,
+	}
+	ks, _ := NewKafkaSource(vi, toBuffers, myForwardToAllTest{}, applier.Terminal, fetchWatermark, toVertexWmStores, publishWMStore, wmb.NewIdleManager(len(toBuffers)), WithLogger(logging.NewLogger()),
 		WithBufferSize(100), WithReadTimeOut(100*time.Millisecond))
 
 	msg := &sarama.ConsumerMessage{
@@ -79,7 +94,7 @@ func TestMessageHandling(t *testing.T) {
 
 	expectedoffset := fmt.Sprintf("%s:%v:%v", topic, partition, offset)
 	// push one message
-	ks.handler.messages <- msg
+	ks.(*kafkaSource).handler.messages <- msg
 
 	readmsgs, err := ks.Read(context.Background(), 10)
 	assert.Nil(t, err)

@@ -25,40 +25,29 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/numaproj/numaflow/pkg/watermark/store/inmem"
-	"github.com/numaproj/numaflow/pkg/watermark/wmb"
-
 	"github.com/numaproj/numaflow/pkg/isb"
-	"github.com/numaproj/numaflow/pkg/watermark/processor"
+	"github.com/numaproj/numaflow/pkg/watermark/entity"
 	"github.com/numaproj/numaflow/pkg/watermark/store"
+	"github.com/numaproj/numaflow/pkg/watermark/wmb"
 )
 
 func TestPublisherWithSharedOTBuckets_InMem(t *testing.T) {
 	var ctx = context.Background()
-
-	var publisherHBKeyspace = "publisherTest_PROCESSORS"
-
-	// this test uses separate OT buckets, so it is an OT bucket per processor
-	var publisherOTKeyspace = "publisherTest_OT_publisherTestPod1"
-
-	heartbeatKV, _, err := inmem.NewKVInMemKVStore(ctx, "testPublisher", publisherHBKeyspace)
+	wmstore, err := store.BuildInmemWatermarkStore(ctx, "test")
 	assert.NoError(t, err)
-	otKV, _, err := inmem.NewKVInMemKVStore(ctx, "testPublisher", publisherOTKeyspace)
-	assert.NoError(t, err)
+	publishEntity := entity.NewProcessorEntity("publisherTestPod1")
 
-	publishEntity := processor.NewProcessorEntity("publisherTestPod1")
-
-	p := NewPublish(ctx, publishEntity, store.BuildWatermarkStore(heartbeatKV, otKV), WithAutoRefreshHeartbeatDisabled(), WithPodHeartbeatRate(1)).(*publish)
+	p := NewPublish(ctx, publishEntity, wmstore, 1, WithAutoRefreshHeartbeatDisabled(), WithPodHeartbeatRate(1)).(*publish)
 
 	var epoch int64 = 1651161600000
 	var location, _ = time.LoadLocation("UTC")
 	for i := 0; i < 3; i++ {
-		p.PublishWatermark(wmb.Watermark(time.UnixMilli(epoch).In(location)), isb.SimpleStringOffset(func() string { return strconv.Itoa(i) }))
+		p.PublishWatermark(wmb.Watermark(time.UnixMilli(epoch).In(location)), isb.SimpleStringOffset(func() string { return strconv.Itoa(i) }), 0)
 		epoch += 60000
 		time.Sleep(time.Millisecond)
 	}
 	// publish a stale watermark (offset doesn't matter)
-	p.PublishWatermark(wmb.Watermark(time.UnixMilli(epoch-120000).In(location)), isb.SimpleStringOffset(func() string { return strconv.Itoa(0) }))
+	p.PublishWatermark(wmb.Watermark(time.UnixMilli(epoch-120000).In(location)), isb.SimpleStringOffset(func() string { return strconv.Itoa(0) }), 0)
 
 	keys, err := p.otStore.GetAllKeys(p.ctx)
 	assert.NoError(t, err)

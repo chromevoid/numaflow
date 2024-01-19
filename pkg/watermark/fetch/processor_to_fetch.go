@@ -19,12 +19,15 @@ package fetch
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"go.uber.org/zap"
 
+	"github.com/numaproj/numaflow/pkg/watermark/entity"
+	"github.com/numaproj/numaflow/pkg/watermark/timeline"
+
 	"github.com/numaproj/numaflow/pkg/shared/logging"
-	"github.com/numaproj/numaflow/pkg/watermark/processor"
 )
 
 type status int
@@ -47,28 +50,49 @@ func (s status) String() string {
 	return "unknown"
 }
 
-// ProcessorToFetch is the smallest unit of entity (from which we fetch data) that does inorder processing or contains inorder data.
+// ProcessorToFetch is the smallest unit of entity (from which we fetch data) that does inorder processing or contains inorder data. It tracks OT for all the partitions of the from buffer.
 type ProcessorToFetch struct {
-	ctx            context.Context
-	entity         processor.ProcessorEntitier
-	status         status
-	offsetTimeline *OffsetTimeline
-	lock           sync.RWMutex
-	log            *zap.SugaredLogger
+	ctx    context.Context
+	entity entity.ProcessorEntitier
+	status status
+	// offsetTimelines is a slice of OTs for each partition of the incoming buffer.
+	offsetTimelines []*timeline.OffsetTimeline
+	lock            sync.RWMutex
+	log             *zap.SugaredLogger
+}
+
+// GetEntity returns the processor entity.
+func (p *ProcessorToFetch) GetEntity() entity.ProcessorEntitier {
+	return p.entity
+}
+
+// GetOffsetTimelines returns the processor's OT.
+func (p *ProcessorToFetch) GetOffsetTimelines() []*timeline.OffsetTimeline {
+	return p.offsetTimelines
 }
 
 func (p *ProcessorToFetch) String() string {
-	return fmt.Sprintf("%s status:%v, timeline: %s", p.entity.GetName(), p.getStatus(), p.offsetTimeline.Dump())
+	var stringBuilder strings.Builder
+	for _, ot := range p.offsetTimelines {
+		stringBuilder.WriteString(fmt.Sprintf(" %s\n ", ot.Dump()))
+	}
+	return fmt.Sprintf("%s status:%v, timelines: %s", p.entity.GetName(), p.getStatus(), stringBuilder.String())
 }
 
 // NewProcessorToFetch creates ProcessorToFetch.
-func NewProcessorToFetch(ctx context.Context, processor processor.ProcessorEntitier, capacity int) *ProcessorToFetch {
+func NewProcessorToFetch(ctx context.Context, processor entity.ProcessorEntitier, capacity int, fromBufferPartitionCount int32) *ProcessorToFetch {
+
+	var offsetTimelines []*timeline.OffsetTimeline
+	for i := int32(0); i < fromBufferPartitionCount; i++ {
+		t := timeline.NewOffsetTimeline(ctx, capacity)
+		offsetTimelines = append(offsetTimelines, t)
+	}
 	p := &ProcessorToFetch{
-		ctx:            ctx,
-		entity:         processor,
-		status:         _active,
-		offsetTimeline: NewOffsetTimeline(ctx, capacity),
-		log:            logging.FromContext(ctx),
+		ctx:             ctx,
+		entity:          processor,
+		status:          _active,
+		offsetTimelines: offsetTimelines,
+		log:             logging.FromContext(ctx),
 	}
 	return p
 }

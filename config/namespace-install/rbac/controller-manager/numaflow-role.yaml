@@ -2,6 +2,10 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: numaflow-role
+  labels:
+    app.kubernetes.io/name: numaflow-controller-manager
+    app.kubernetes.io/part-of: numaflow
+    app.kubernetes.io/component: controller-manager
 rules:
   - apiGroups:
       - numaflow.numaproj.io
@@ -26,13 +30,6 @@ rules:
       - vertices/status
       - vertices/scale
   - apiGroups:
-    - ""
-    resources:
-    - "events"
-    verbs:
-      - "create"
-      - "patch"
-  - apiGroups:
       - coordination.k8s.io
     resources:
       - leases
@@ -44,6 +41,13 @@ rules:
       - update
       - patch
       - delete
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
   - apiGroups:
       - ""
     resources:

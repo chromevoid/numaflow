@@ -26,15 +26,26 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
-	"github.com/numaproj/numaflow/pkg/forward"
-	"github.com/numaproj/numaflow/pkg/forward/applier"
+	"github.com/numaproj/numaflow/pkg/forwarder"
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/isb/stores/simplebuffer"
 	natstest "github.com/numaproj/numaflow/pkg/shared/clients/nats/test"
+	"github.com/numaproj/numaflow/pkg/sources/forward/applier"
+	"github.com/numaproj/numaflow/pkg/sources/sourcer"
 	"github.com/numaproj/numaflow/pkg/watermark/generic"
 	"github.com/numaproj/numaflow/pkg/watermark/store"
-	"github.com/numaproj/numaflow/pkg/watermark/store/noop"
+	"github.com/numaproj/numaflow/pkg/watermark/wmb"
 )
+
+type myForwardToAllTest struct {
+}
+
+func (f myForwardToAllTest) WhereTo(_ []string, _ []string) ([]forwarder.VertexBuffer, error) {
+	return []forwarder.VertexBuffer{{
+		ToVertexName:         "test",
+		ToVertexPartitionIdx: 0,
+	}}, nil
+}
 
 func testVertex(t *testing.T, url, subject, queue string, hostname string, replicaIndex int32) *dfv1.VertexInstance {
 	t.Helper()
@@ -60,21 +71,31 @@ func testVertex(t *testing.T, url, subject, queue string, hostname string, repli
 	return vi
 }
 
-func newInstance(t *testing.T, vi *dfv1.VertexInstance) (*natsSource, error) {
+func newInstance(t *testing.T, vi *dfv1.VertexInstance) (sourcer.Sourcer, error) {
 	t.Helper()
-	dest := []isb.BufferWriter{simplebuffer.NewInMemoryBuffer("test", 100)}
-	publishWMStores := store.BuildWatermarkStore(noop.NewKVNoOpStore(), noop.NewKVNoOpStore())
-	fetchWatermark, publishWatermark := generic.BuildNoOpWatermarkProgressorsFromBufferMap(map[string]isb.BufferWriter{})
-	return New(vi, dest, forward.All, applier.Terminal, fetchWatermark, publishWatermark, publishWMStores, WithReadTimeout(1*time.Second))
+	dest := simplebuffer.NewInMemoryBuffer("test", 100, 0)
+	toBuffers := map[string][]isb.BufferWriter{
+		"test": {dest},
+	}
+
+	publishWMStores, _ := store.BuildNoOpWatermarkStore()
+	fetchWatermark, _ := generic.BuildNoOpSourceWatermarkProgressorsFromBufferMap(map[string][]isb.BufferWriter{})
+	toVertexWmStores := map[string]store.WatermarkStore{
+		"testVertex": publishWMStores,
+	}
+	return New(vi, toBuffers, myForwardToAllTest{}, applier.Terminal, fetchWatermark, toVertexWmStores, publishWMStores, wmb.NewIdleManager(len(toBuffers)), WithReadTimeout(1*time.Second))
 }
 
 func Test_Single(t *testing.T) {
+	// default read timeout is 1 sec, and smaller values seems to be flaky
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	server := natstest.RunNatsServer(t)
 	defer server.Shutdown()
 
 	url := "127.0.0.1"
-	testSubject := "test"
-	testQueue := "test-queue"
+	testSubject := "test-single"
+	testQueue := "test-queue-single"
 	vi := testVertex(t, url, testSubject, testQueue, "test-host", 0)
 	ns, err := newInstance(t, vi)
 	assert.NoError(t, err)
@@ -85,13 +106,31 @@ func Test_Single(t *testing.T) {
 	nc, err := natslib.Connect(url)
 	assert.NoError(t, err)
 	defer nc.Close()
-	_ = nc.Publish(testSubject, []byte("1"))
-	_ = nc.Publish(testSubject, []byte("2"))
-	_ = nc.Publish(testSubject, []byte("3"))
 
-	msgs, err := ns.Read(context.Background(), 5)
-	assert.NoError(t, err)
-	assert.Equal(t, 3, len(msgs))
+	for i := 0; i < 3; i++ {
+		err = nc.Publish(testSubject, []byte(fmt.Sprintf("%d", i)))
+		assert.NoError(t, err)
+	}
+
+	var msgs []*isb.ReadMessage
+	var readMessagesCount int
+
+loop:
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatal("timeout waiting for messages")
+			return
+		default:
+			msgs, err = ns.Read(ctx, 5)
+			assert.NoError(t, err)
+			readMessagesCount += len(msgs)
+			if readMessagesCount == 3 {
+				break loop
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
 }
 
 func Test_Multiple(t *testing.T) {
@@ -99,8 +138,8 @@ func Test_Multiple(t *testing.T) {
 	defer server.Shutdown()
 
 	url := "127.0.0.1"
-	testSubject := "test"
-	testQueue := "test-queue"
+	testSubject := "test-multiple"
+	testQueue := "test-queue-multiple"
 	v1 := testVertex(t, url, testSubject, testQueue, "test-host1", 0)
 	ns1, err := newInstance(t, v1)
 	assert.NoError(t, err)
@@ -117,7 +156,7 @@ func Test_Multiple(t *testing.T) {
 	assert.NoError(t, err)
 	defer nc.Close()
 	for i := 0; i < 5; i++ {
-		err := nc.Publish(testSubject, []byte(fmt.Sprint(i)))
+		err = nc.Publish(testSubject, []byte(fmt.Sprint(i)))
 		assert.NoError(t, err)
 	}
 
@@ -138,6 +177,7 @@ func Test_Multiple(t *testing.T) {
 			if read == 5 {
 				return
 			}
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
 }

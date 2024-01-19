@@ -21,51 +21,36 @@ import (
 	"fmt"
 	"time"
 
-	functionpb "github.com/numaproj/numaflow-go/pkg/apis/proto/function/v1"
-	functionsdk "github.com/numaproj/numaflow-go/pkg/function"
-	"github.com/numaproj/numaflow-go/pkg/function/client"
-
-	"github.com/numaproj/numaflow/pkg/forward/applier"
-	"github.com/numaproj/numaflow/pkg/isb"
-	"github.com/numaproj/numaflow/pkg/udf/function"
-
+	v1 "github.com/numaproj/numaflow-go/pkg/apis/proto/sourcetransform/v1"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"k8s.io/apimachinery/pkg/util/wait"
+
+	"github.com/numaproj/numaflow/pkg/isb"
+	sdkerr "github.com/numaproj/numaflow/pkg/sdkclient/error"
+	"github.com/numaproj/numaflow/pkg/sdkclient/sourcetransformer"
+	"github.com/numaproj/numaflow/pkg/shared/logging"
+	"github.com/numaproj/numaflow/pkg/udf/rpc"
 )
 
-// gRPCBasedTransformer applies user defined transformer over gRPC (over Unix Domain Socket) client/server where server is the transformer.
-type gRPCBasedTransformer struct {
-	client functionsdk.Client
+// GRPCBasedTransformer applies user defined transformer over gRPC (over Unix Domain Socket) client/server where server is the transformer.
+type GRPCBasedTransformer struct {
+	client sourcetransformer.Client
 }
-
-var _ applier.MapApplier = (*gRPCBasedTransformer)(nil)
 
 // NewGRPCBasedTransformer returns a new gRPCBasedTransformer object.
-func NewGRPCBasedTransformer() (*gRPCBasedTransformer, error) {
-	c, err := client.New()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create a new gRPC client: %w", err)
-	}
-	return &gRPCBasedTransformer{c}, nil
-}
-
-// NewGRPCBasedTransformerWithClient need this for testing
-func NewGRPCBasedTransformerWithClient(client functionsdk.Client) *gRPCBasedTransformer {
-	return &gRPCBasedTransformer{client: client}
-}
-
-// CloseConn closes the gRPC client connection.
-func (u *gRPCBasedTransformer) CloseConn(ctx context.Context) error {
-	return u.client.CloseConn(ctx)
+func NewGRPCBasedTransformer(client sourcetransformer.Client) *GRPCBasedTransformer {
+	return &GRPCBasedTransformer{client: client}
 }
 
 // IsHealthy checks if the transformer container is healthy.
-func (u *gRPCBasedTransformer) IsHealthy(ctx context.Context) error {
+func (u *GRPCBasedTransformer) IsHealthy(ctx context.Context) error {
 	return u.WaitUntilReady(ctx)
 }
 
 // WaitUntilReady waits until the client is connected.
-func (u *gRPCBasedTransformer) WaitUntilReady(ctx context.Context) error {
+func (u *GRPCBasedTransformer) WaitUntilReady(ctx context.Context) error {
+	log := logging.FromContext(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -73,42 +58,96 @@ func (u *gRPCBasedTransformer) WaitUntilReady(ctx context.Context) error {
 		default:
 			if _, err := u.client.IsReady(ctx, &emptypb.Empty{}); err == nil {
 				return nil
+			} else {
+				log.Infof("waiting for transformer to be ready: %v", err)
+				time.Sleep(1 * time.Second)
 			}
-			time.Sleep(1 * time.Second)
 		}
 	}
 }
 
-func (u *gRPCBasedTransformer) ApplyMap(ctx context.Context, readMessage *isb.ReadMessage) ([]*isb.WriteMessage, error) {
+// CloseConn closes the gRPC client connection.
+func (u *GRPCBasedTransformer) CloseConn(ctx context.Context) error {
+	return u.client.CloseConn(ctx)
+}
+
+func (u *GRPCBasedTransformer) ApplyTransform(ctx context.Context, readMessage *isb.ReadMessage) ([]*isb.WriteMessage, error) {
 	keys := readMessage.Keys
 	payload := readMessage.Body.Payload
 	offset := readMessage.ReadOffset
 	parentMessageInfo := readMessage.MessageInfo
-	var d = &functionpb.DatumRequest{
+	var req = &v1.SourceTransformRequest{
 		Keys:      keys,
 		Value:     payload,
-		EventTime: &functionpb.EventTime{EventTime: timestamppb.New(parentMessageInfo.EventTime)},
-		Watermark: &functionpb.Watermark{Watermark: timestamppb.New(readMessage.Watermark)},
+		EventTime: timestamppb.New(parentMessageInfo.EventTime),
+		Watermark: timestamppb.New(readMessage.Watermark),
 	}
 
-	datumList, err := u.client.MapTFn(ctx, d)
+	response, err := u.client.SourceTransformFn(ctx, req)
 	if err != nil {
-		return nil, function.ApplyUDFErr{
-			UserUDFErr: false,
-			Message:    fmt.Sprintf("gRPC client.MapTFn failed, %s", err),
-			InternalErr: function.InternalErr{
-				Flag:        true,
-				MainCarDown: false,
-			},
+		udfErr, _ := sdkerr.FromError(err)
+		switch udfErr.ErrorKind() {
+		case sdkerr.Retryable:
+			var success bool
+			_ = wait.ExponentialBackoffWithContext(ctx, wait.Backoff{
+				// retry every "duration * factor + [0, jitter]" interval for 5 times
+				Duration: 1 * time.Second,
+				Factor:   1,
+				Jitter:   0.1,
+				Steps:    5,
+			}, func() (done bool, err error) {
+				response, err = u.client.SourceTransformFn(ctx, req)
+				if err != nil {
+					udfErr, _ = sdkerr.FromError(err)
+					switch udfErr.ErrorKind() {
+					case sdkerr.Retryable:
+						return false, nil
+					case sdkerr.NonRetryable:
+						return true, nil
+					default:
+						return true, nil
+					}
+				}
+				success = true
+				return true, nil
+			})
+			if !success {
+				return nil, rpc.ApplyUDFErr{
+					UserUDFErr: false,
+					Message:    fmt.Sprintf("gRPC client.SourceTransformFn failed, %s", err),
+					InternalErr: rpc.InternalErr{
+						Flag:        true,
+						MainCarDown: false,
+					},
+				}
+			}
+		case sdkerr.NonRetryable:
+			return nil, rpc.ApplyUDFErr{
+				UserUDFErr: false,
+				Message:    fmt.Sprintf("gRPC client.SourceTransformFn failed, %s", err),
+				InternalErr: rpc.InternalErr{
+					Flag:        true,
+					MainCarDown: false,
+				},
+			}
+		default:
+			return nil, rpc.ApplyUDFErr{
+				UserUDFErr: false,
+				Message:    fmt.Sprintf("gRPC client.SourceTransformFn failed, %s", err),
+				InternalErr: rpc.InternalErr{
+					Flag:        true,
+					MainCarDown: false,
+				},
+			}
 		}
 	}
 
 	taggedMessages := make([]*isb.WriteMessage, 0)
-	for i, datum := range datumList {
-		keys := datum.Keys
-		if datum.EventTime != nil {
+	for i, result := range response.GetResults() {
+		keys := result.Keys
+		if result.EventTime != nil {
 			// Transformer supports changing event time.
-			parentMessageInfo.EventTime = datum.EventTime.EventTime.AsTime()
+			parentMessageInfo.EventTime = result.EventTime.AsTime()
 		}
 		taggedMessage := &isb.WriteMessage{
 			Message: isb.Message{
@@ -118,10 +157,10 @@ func (u *gRPCBasedTransformer) ApplyMap(ctx context.Context, readMessage *isb.Re
 					Keys:        keys,
 				},
 				Body: isb.Body{
-					Payload: datum.Value,
+					Payload: result.Value,
 				},
 			},
-			Tags: datum.Tags,
+			Tags: result.Tags,
 		}
 		taggedMessages = append(taggedMessages, taggedMessage)
 	}

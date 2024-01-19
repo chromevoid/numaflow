@@ -19,21 +19,14 @@ package fixtures
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
-
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/portforward"
-	"k8s.io/client-go/transport/spdy"
 
 	"github.com/stretchr/testify/suite"
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	runtimeutil "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -41,6 +34,7 @@ import (
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 	flowversiond "github.com/numaproj/numaflow/pkg/client/clientset/versioned"
 	flowpkg "github.com/numaproj/numaflow/pkg/client/clientset/versioned/typed/numaflow/v1alpha1"
+	sharedutil "github.com/numaproj/numaflow/pkg/shared/util"
 )
 
 const (
@@ -67,7 +61,7 @@ metadata:
 spec:
   redis:
     native:
-      version: 6.2.6`
+      version: 7.0.11`
 
 	e2eISBSvcJetStream = `apiVersion: numaflow.numaproj.io/v1alpha1
 kind: InterStepBufferService
@@ -92,19 +86,7 @@ type E2ESuite struct {
 
 func (s *E2ESuite) SetupSuite() {
 	var err error
-	kubeconfig := os.Getenv("KUBECONFIG")
-	if kubeconfig == "" {
-		home, _ := os.UserHomeDir()
-		kubeconfig = home + "/.kube/config"
-		if _, err := os.Stat(kubeconfig); err != nil && os.IsNotExist(err) {
-			kubeconfig = ""
-		}
-	}
-	if kubeconfig != "" {
-		s.restConfig, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-	} else {
-		s.restConfig, err = rest.InClusterConfig()
-	}
+	s.restConfig, err = sharedutil.K8sRestConfig()
 	s.stopch = make(chan struct{})
 	s.CheckError(err)
 	s.kubeClient, err = kubernetes.NewForConfig(s.restConfig)
@@ -201,37 +183,6 @@ func (s *E2ESuite) Given() *Given {
 		vertexClient:   s.vertexClient,
 		restConfig:     s.restConfig,
 		kubeClient:     s.kubeClient,
-	}
-}
-
-func (s *E2ESuite) StartPortForward(podName string, port int) (stopPortForward func()) {
-
-	s.T().Log("Starting port-forward to pod :", podName, port)
-	transport, upgrader, err := spdy.RoundTripperFor(s.restConfig)
-	if err != nil {
-		panic(err)
-	}
-	x, err := url.Parse(fmt.Sprintf("%s/api/v1/namespaces/%s/pods/%s/portforward", s.restConfig.Host, Namespace, podName))
-	if err != nil {
-		panic(err)
-	}
-	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, "POST", x)
-	stopChan, readyChan := make(chan struct{}, 1), make(chan struct{}, 1)
-	forwarder, err := portforward.New(dialer, []string{fmt.Sprintf("%d:%d", port, port)}, stopChan, readyChan, os.Stdout, os.Stderr)
-	if err != nil {
-		panic(err)
-	}
-	go func() {
-		defer runtimeutil.HandleCrash()
-		if err := forwarder.ForwardPorts(); err != nil {
-			panic(err)
-		}
-	}()
-	<-readyChan
-	s.T().Log("Started port-forward :", podName, port)
-	return func() {
-		stopChan <- struct{}{}
-		s.T().Log("Stopped port-forward :", podName, port)
 	}
 }
 

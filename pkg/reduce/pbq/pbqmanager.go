@@ -32,15 +32,8 @@ import (
 	"github.com/numaproj/numaflow/pkg/reduce/pbq/store"
 	"github.com/numaproj/numaflow/pkg/window"
 
-	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
 )
-
-// RegisteredWindow to track the number of windows for a start and end time.
-type RegisteredWindow struct {
-	window.AlignedKeyedWindower
-	count int
-}
 
 // Manager helps in managing the lifecycle of PBQ instances
 type Manager struct {
@@ -51,7 +44,7 @@ type Manager struct {
 	pbqOptions    *options
 	pbqMap        map[string]*PBQ
 	log           *zap.SugaredLogger
-	yetToBeClosed *window.SortedWindowList[*RegisteredWindow]
+	windowType    window.Type
 	// we need lock to access pbqMap, since deregister will be called inside pbq
 	// and each pbq will be inside a go routine, and also entire PBQ could be managed
 	// through a go routine (depends on the orchestrator)
@@ -60,7 +53,7 @@ type Manager struct {
 
 // NewManager returns new instance of manager
 // We don't intend this to be called by multiple routines.
-func NewManager(ctx context.Context, vertexName string, pipelineName string, vr int32, storeProvider store.StoreProvider, opts ...PBQOption) (*Manager, error) {
+func NewManager(ctx context.Context, vertexName string, pipelineName string, vr int32, storeProvider store.StoreProvider, windowType window.Type, opts ...PBQOption) (*Manager, error) {
 	pbqOpts := DefaultOptions()
 	for _, opt := range opts {
 		if opt != nil {
@@ -78,14 +71,14 @@ func NewManager(ctx context.Context, vertexName string, pipelineName string, vr 
 		pbqMap:        make(map[string]*PBQ),
 		pbqOptions:    pbqOpts,
 		log:           logging.FromContext(ctx),
-		yetToBeClosed: window.NewSortedWindowList[*RegisteredWindow](),
+		windowType:    windowType,
 	}
 
 	return pbqManager, nil
 }
 
 // CreateNewPBQ creates new pbq for a partition
-func (m *Manager) CreateNewPBQ(ctx context.Context, partitionID partition.ID, win window.AlignedKeyedWindower) (ReadWriteCloser, error) {
+func (m *Manager) CreateNewPBQ(ctx context.Context, partitionID partition.ID) (ReadWriteCloser, error) {
 	persistentStore, err := m.storeProvider.CreateStore(ctx, partitionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create a PBQ store, %w", err)
@@ -97,12 +90,12 @@ func (m *Manager) CreateNewPBQ(ctx context.Context, partitionID partition.ID, wi
 		pipelineName:  m.pipelineName,
 		vertexReplica: m.vertexReplica,
 		store:         persistentStore,
-		output:        make(chan *isb.ReadMessage, m.pbqOptions.channelBufferSize),
+		output:        make(chan *window.TimedWindowRequest, m.pbqOptions.channelBufferSize),
 		cob:           false,
 		PartitionID:   partitionID,
 		options:       m.pbqOptions,
 		manager:       m,
-		kw:            win,
+		windowType:    m.windowType, // FIXME(session): this is can be removed when we have unaligned window replay
 		log:           logging.FromContext(ctx).With("PBQ", partitionID),
 	}
 	m.register(partitionID, p)
@@ -207,13 +200,6 @@ func (m *Manager) ShutDown(ctx context.Context) {
 
 // register is intended to be used by PBQ to register itself with the manager.
 func (m *Manager) register(partitionID partition.ID, p *PBQ) {
-	ww := &RegisteredWindow{
-		AlignedKeyedWindower: p.kw,
-	}
-
-	ww, _ = m.yetToBeClosed.InsertIfNotPresent(ww)
-	ww.count += 1
-
 	m.Lock()
 	defer m.Unlock()
 
@@ -231,26 +217,17 @@ func (m *Manager) register(partitionID partition.ID, p *PBQ) {
 // deregister is intended to be used by PBQ to deregister itself after GC is called.
 // it will also delete the store using the store provider
 func (m *Manager) deregister(partitionID partition.ID) error {
+
 	m.Lock()
-	defer m.Unlock()
-
-	ww := &RegisteredWindow{
-		AlignedKeyedWindower: m.pbqMap[partitionID.String()].kw,
-	}
-
-	ww, _ = m.yetToBeClosed.InsertIfNotPresent(ww)
-	ww.count -= 1
-
-	if ww.count == 0 {
-		m.yetToBeClosed.DeleteWindow(ww)
-	}
-
 	delete(m.pbqMap, partitionID.String())
+	m.Unlock()
+
 	activePartitionCount.With(map[string]string{
 		metrics.LabelVertex:             m.vertexName,
 		metrics.LabelPipeline:           m.pipelineName,
 		metrics.LabelVertexReplicaIndex: strconv.Itoa(int(m.vertexReplica)),
 	}).Dec()
+
 	return m.storeProvider.DeleteStore(partitionID)
 }
 
@@ -282,12 +259,4 @@ func (m *Manager) Replay(ctx context.Context) {
 
 	wg.Wait()
 	m.log.Infow("Finished replaying records from store", zap.Duration("took", time.Since(tm)), zap.Any("partitions", partitionsIds))
-}
-
-// NextWindowToBeClosed returns the next keyed window that is yet to be closed
-func (m *Manager) NextWindowToBeClosed() window.AlignedKeyedWindower {
-	if m.yetToBeClosed.Len() == 0 {
-		return nil
-	}
-	return m.yetToBeClosed.Front()
 }

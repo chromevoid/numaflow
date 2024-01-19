@@ -1,0 +1,9 @@
+.errors-header-text {
+    font-size: 1.25rem;
+    font-style: normal;
+    font-weight: 500;
+}
+
+.errors-message-text {
+    color: #D52B1E;
+}

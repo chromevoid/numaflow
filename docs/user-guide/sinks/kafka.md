@@ -1,6 +1,6 @@
 # Kafka Sink
 
-A `Kafka` sink is used to forward the messages to a Kafka topic.
+A `Kafka` sink is used to forward the messages to a Kafka topic. Kafka sink supports configuration overrides.
 
 ```yaml
 spec:
@@ -56,7 +56,7 @@ spec:
               # Set this to false if using a non-Kafka SASL proxy
               handshake: true
           # Optional, a yaml format string which could apply more configuration for the sink.
-          # The configuration hierarchy follows the Struct of sarama.Config at https://github.com/Shopify/sarama/blob/main/config.go.
+          # The configuration hierarchy follows the Struct of sarama.Config at https://github.com/IBM/sarama/blob/main/config.go.
           config: |
             producer:
             compression: 2

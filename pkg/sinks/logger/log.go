@@ -23,20 +23,20 @@ import (
 	"go.uber.org/zap"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
-	"github.com/numaproj/numaflow/pkg/forward"
-	"github.com/numaproj/numaflow/pkg/forward/applier"
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/metrics"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
+	sinkforward "github.com/numaproj/numaflow/pkg/sinks/forward"
 	"github.com/numaproj/numaflow/pkg/watermark/fetch"
 	"github.com/numaproj/numaflow/pkg/watermark/publish"
+	"github.com/numaproj/numaflow/pkg/watermark/wmb"
 )
 
 // ToLog prints the output to a log sinks.
 type ToLog struct {
 	name         string
 	pipelineName string
-	isdf         *forward.InterStepDataForward
+	isdf         *sinkforward.DataForward
 	logger       *zap.SugaredLogger
 }
 
@@ -50,11 +50,17 @@ func WithLogger(log *zap.SugaredLogger) Option {
 }
 
 // NewToLog returns ToLog type.
-func NewToLog(vertex *dfv1.Vertex, fromBuffer isb.BufferReader, fetchWatermark fetch.Fetcher, publishWatermark map[string]publish.Publisher, opts ...Option) (*ToLog, error) {
+func NewToLog(vertexInstance *dfv1.VertexInstance,
+	fromBuffer isb.BufferReader,
+	fetchWatermark fetch.Fetcher,
+	publishWatermark publish.Publisher,
+	idleManager wmb.IdleManager,
+	opts ...Option) (*ToLog, error) {
+
 	toLog := new(ToLog)
-	name := vertex.Spec.Name
+	name := vertexInstance.Vertex.Spec.Name
 	toLog.name = name
-	toLog.pipelineName = vertex.Spec.PipelineName
+	toLog.pipelineName = vertexInstance.Vertex.Spec.PipelineName
 	// use opts in future for specifying logger format etc
 	for _, o := range opts {
 		if err := o(toLog); err != nil {
@@ -65,14 +71,14 @@ func NewToLog(vertex *dfv1.Vertex, fromBuffer isb.BufferReader, fetchWatermark f
 		toLog.logger = logging.NewLogger()
 	}
 
-	forwardOpts := []forward.Option{forward.WithVertexType(dfv1.VertexTypeSink), forward.WithLogger(toLog.logger)}
-	if x := vertex.Spec.Limits; x != nil {
+	forwardOpts := []sinkforward.Option{sinkforward.WithLogger(toLog.logger)}
+	if x := vertexInstance.Vertex.Spec.Limits; x != nil {
 		if x.ReadBatchSize != nil {
-			forwardOpts = append(forwardOpts, forward.WithReadBatchSize(int64(*x.ReadBatchSize)))
+			forwardOpts = append(forwardOpts, sinkforward.WithReadBatchSize(int64(*x.ReadBatchSize)))
 		}
 	}
 
-	isdf, err := forward.NewInterStepDataForward(vertex, fromBuffer, map[string]isb.BufferWriter{vertex.GetToBuffers()[0].Name: toLog}, forward.All, applier.Terminal, fetchWatermark, publishWatermark, forwardOpts...)
+	isdf, err := sinkforward.NewDataForward(vertexInstance, fromBuffer, toLog, fetchWatermark, publishWatermark, idleManager, forwardOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -84,6 +90,12 @@ func NewToLog(vertex *dfv1.Vertex, fromBuffer isb.BufferReader, fetchWatermark f
 // GetName returns the name.
 func (t *ToLog) GetName() string {
 	return t.name
+}
+
+// GetPartitionIdx returns the partition index.
+// for sink it is always 0.
+func (t *ToLog) GetPartitionIdx() int32 {
+	return 0
 }
 
 // IsFull returns whether logging is full, which is never true.

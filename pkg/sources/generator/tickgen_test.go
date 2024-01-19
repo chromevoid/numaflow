@@ -21,25 +21,35 @@ import (
 	"testing"
 	"time"
 
-	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
-	"github.com/numaproj/numaflow/pkg/forward"
-	"github.com/numaproj/numaflow/pkg/forward/applier"
-	"github.com/numaproj/numaflow/pkg/isb"
-	"github.com/numaproj/numaflow/pkg/isb/stores/simplebuffer"
-	"github.com/numaproj/numaflow/pkg/watermark/generic"
-	"github.com/numaproj/numaflow/pkg/watermark/store"
-	"github.com/numaproj/numaflow/pkg/watermark/store/noop"
-
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
+	"github.com/numaproj/numaflow/pkg/forwarder"
+	"github.com/numaproj/numaflow/pkg/isb"
+	"github.com/numaproj/numaflow/pkg/isb/stores/simplebuffer"
+	"github.com/numaproj/numaflow/pkg/sources/forward/applier"
+	"github.com/numaproj/numaflow/pkg/watermark/generic"
+	"github.com/numaproj/numaflow/pkg/watermark/store"
+	"github.com/numaproj/numaflow/pkg/watermark/wmb"
 )
 
+type myForwardToAllTest struct {
+}
+
+func (f myForwardToAllTest) WhereTo(_ []string, _ []string) ([]forwarder.VertexBuffer, error) {
+	return []forwarder.VertexBuffer{{
+		ToVertexName:         "writer",
+		ToVertexPartitionIdx: 0,
+	}}, nil
+}
+
 func TestRead(t *testing.T) {
-	dest := simplebuffer.NewInMemoryBuffer("writer", 100, simplebuffer.WithReadTimeOut(10*time.Second))
+	dest := simplebuffer.NewInMemoryBuffer("writer", 100, 0, simplebuffer.WithReadTimeOut(10*time.Second))
 	ctx := context.Background()
 	vertex := &dfv1.Vertex{
 		ObjectMeta: v1.ObjectMeta{
-			Name: "memgen",
+			Name: "memGen",
 		},
 		Spec: dfv1.VertexSpec{
 			PipelineName: "testPipeline",
@@ -57,12 +67,16 @@ func TestRead(t *testing.T) {
 		Replica:  0,
 	}
 
-	publishWMStore := store.BuildWatermarkStore(noop.NewKVNoOpStore(), noop.NewKVNoOpStore())
-	toSteps := map[string]isb.BufferWriter{
-		"writer": dest,
+	publishWMStore, _ := store.BuildNoOpWatermarkStore()
+	toBuffers := map[string][]isb.BufferWriter{
+		"writer": {dest},
 	}
-	fetchWatermark, publishWatermark := generic.BuildNoOpWatermarkProgressorsFromBufferMap(toSteps)
-	mgen, err := NewMemGen(m, []isb.BufferWriter{dest}, forward.All, applier.Terminal, fetchWatermark, publishWatermark, publishWMStore)
+
+	fetchWatermark, _ := generic.BuildNoOpSourceWatermarkProgressorsFromBufferMap(toBuffers)
+	toVertexWmStores := map[string]store.WatermarkStore{
+		"writer": publishWMStore,
+	}
+	mgen, err := NewMemGen(m, toBuffers, myForwardToAllTest{}, applier.Terminal, fetchWatermark, toVertexWmStores, publishWMStore, wmb.NewIdleManager(len(toBuffers)))
 	assert.NoError(t, err)
 	_ = mgen.Start()
 
@@ -75,7 +89,7 @@ func TestRead(t *testing.T) {
 
 	// wait for the context to be completely stopped.
 	for {
-		_, ok := <-mgen.srcchan
+		_, ok := <-mgen.(*memGen).srcChan
 		if !ok {
 			break
 		}
@@ -92,10 +106,10 @@ func TestStop(t *testing.T) {
 	ctx := context.Background()
 
 	// default rpu is 5. set the test to run for 2 ticks.
-	dest := simplebuffer.NewInMemoryBuffer("writer", 10)
+	dest := simplebuffer.NewInMemoryBuffer("writer", 10, 0)
 	vertex := &dfv1.Vertex{
 		ObjectMeta: v1.ObjectMeta{
-			Name: "memgen",
+			Name: "memGen",
 		},
 		Spec: dfv1.VertexSpec{
 			PipelineName: "testPipeline",
@@ -112,12 +126,16 @@ func TestStop(t *testing.T) {
 		Hostname: "TestRead",
 		Replica:  0,
 	}
-	publishWMStore := store.BuildWatermarkStore(noop.NewKVNoOpStore(), noop.NewKVNoOpStore())
-	toSteps := map[string]isb.BufferWriter{
-		"writer": dest,
+	publishWMStore, _ := store.BuildNoOpWatermarkStore()
+	toBuffers := map[string][]isb.BufferWriter{
+		"writer": {dest},
 	}
-	fetchWatermark, publishWatermark := generic.BuildNoOpWatermarkProgressorsFromBufferMap(toSteps)
-	mgen, err := NewMemGen(m, []isb.BufferWriter{dest}, forward.All, applier.Terminal, fetchWatermark, publishWatermark, publishWMStore)
+
+	fetchWatermark, _ := generic.BuildNoOpSourceWatermarkProgressorsFromBufferMap(toBuffers)
+	toVertexWmStores := map[string]store.WatermarkStore{
+		"writer": publishWMStore,
+	}
+	mgen, err := NewMemGen(m, toBuffers, myForwardToAllTest{}, applier.Terminal, fetchWatermark, toVertexWmStores, publishWMStore, wmb.NewIdleManager(len(toBuffers)))
 	assert.NoError(t, err)
 	stop := mgen.Start()
 
@@ -158,27 +176,15 @@ func TestStop(t *testing.T) {
 	}
 }
 
-func TestTimeParsing(t *testing.T) {
-	rbytes := recordGenerator(8, nil, time.Now().UnixNano())
-	parsedtime := parseTime(rbytes)
-	assert.True(t, parsedtime > 0)
-}
-
-func TestUnparseableTime(t *testing.T) {
-	rbytes := []byte("this is unparseable as json")
-	parsedtime := parseTime(rbytes)
-	assert.True(t, parsedtime == 0)
-}
-
 func TestTimeForValidTime(t *testing.T) {
 	nanotime := time.Now().UnixNano()
-	parsedtime := timeFromNanos(nanotime)
+	parsedtime := timeFromNanos(nanotime, 0)
 	assert.Equal(t, nanotime, parsedtime.UnixNano())
 }
 
 func TestTimeForInvalidTime(t *testing.T) {
 	nanotime := int64(-1)
-	parsedtime := timeFromNanos(nanotime)
+	parsedtime := timeFromNanos(nanotime, 0)
 	assert.True(t, parsedtime.UnixNano() > 0)
 }
 
@@ -188,10 +194,10 @@ func TestWatermark(t *testing.T) {
 	// for use by the buffer reader on the other side of the stream
 	ctx := context.Background()
 
-	dest := simplebuffer.NewInMemoryBuffer("writer", 1000)
+	dest := simplebuffer.NewInMemoryBuffer("writer", 1000, 0)
 	vertex := &dfv1.Vertex{
 		ObjectMeta: v1.ObjectMeta{
-			Name: "memgen",
+			Name: "memGen",
 		},
 		Spec: dfv1.VertexSpec{
 			PipelineName: "testPipeline",
@@ -208,8 +214,12 @@ func TestWatermark(t *testing.T) {
 		Hostname: "TestRead",
 		Replica:  0,
 	}
-	publishWMStore := store.BuildWatermarkStore(noop.NewKVNoOpStore(), noop.NewKVNoOpStore())
-	mgen, err := NewMemGen(m, []isb.BufferWriter{dest}, forward.All, applier.Terminal, nil, nil, publishWMStore)
+	toBuffers := map[string][]isb.BufferWriter{
+		"writer": {dest},
+	}
+
+	publishWMStore, _ := store.BuildNoOpWatermarkStore()
+	mgen, err := NewMemGen(m, toBuffers, myForwardToAllTest{}, applier.Terminal, nil, nil, publishWMStore, nil)
 	assert.NoError(t, err)
 	stop := mgen.Start()
 

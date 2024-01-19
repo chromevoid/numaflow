@@ -16,26 +16,58 @@ limitations under the License.
 
 package v1alpha1
 
+import "fmt"
+
 type Edge struct {
 	From string `json:"from" protobuf:"bytes,1,opt,name=from"`
 	To   string `json:"to" protobuf:"bytes,2,opt,name=to"`
 	// Conditional forwarding, only allowed when "From" is a Sink or UDF.
 	// +optional
 	Conditions *ForwardConditions `json:"conditions" protobuf:"bytes,3,opt,name=conditions"`
-	// Limits define the limitations such as buffer read batch size for the edge, will override pipeline level settings.
-	// +optional
-	Limits *EdgeLimits `json:"limits,omitempty" protobuf:"bytes,4,opt,name=limits"`
-	// Parallelism is only effective when the "to" vertex is a reduce vertex,
-	// if it's not provided, the default value is set to "1".
-	// Parallelism is ignored when the "to" vertex is not a reduce vertex.
-	// +optional
-	Parallelism *int32 `json:"parallelism" protobuf:"bytes,5,opt,name=parallelism"`
 	// OnFull specifies the behaviour for the write actions when the inter step buffer is full.
 	// There are currently two options, retryUntilSuccess and discardLatest.
 	// if not provided, the default value is set to "retryUntilSuccess"
 	// +kubebuilder:validation:Enum=retryUntilSuccess;discardLatest
 	// +optional
-	OnFull *BufferFullWritingStrategy `json:"onFull,omitempty" protobuf:"bytes,6,opt,name=onFull"`
+	OnFull *BufferFullWritingStrategy `json:"onFull,omitempty" protobuf:"bytes,4,opt,name=onFull"`
+}
+
+// CombinedEdge is a combination of Edge and some other properties such as vertex type, partitions, limits.
+// It's used to decorate the fromEdges and toEdges of the generated Vertex objects, so that in the vertex pod,
+// it knows the properties of the connected vertices, for example, how many partitioned buffers I should write
+// to, what is the write buffer length, etc.
+type CombinedEdge struct {
+	Edge `json:",inline" protobuf:"bytes,1,opt,name=edge"`
+	// From vertex type.
+	FromVertexType VertexType `json:"fromVertexType" protobuf:"bytes,2,opt,name=fromVertexType"`
+	// The number of partitions of the from vertex, if not provided, the default value is set to "1".
+	// +optional
+	FromVertexPartitionCount *int32 `json:"fromVertexPartitionCount,omitempty" protobuf:"bytes,3,opt,name=fromVertexPartitionCount"`
+	// +optional
+	FromVertexLimits *VertexLimits `json:"fromVertexLimits,omitempty" protobuf:"bytes,4,opt,name=fromVertexLimits"`
+	// To vertex type.
+	ToVertexType VertexType `json:"toVertexType" protobuf:"bytes,5,opt,name=toVertexType"`
+	// The number of partitions of the to vertex, if not provided, the default value is set to "1".
+	// +optional
+	ToVertexPartitionCount *int32 `json:"toVertexPartitionCount,omitempty" protobuf:"bytes,6,opt,name=toVertexPartitionCount"`
+	// +optional
+	ToVertexLimits *VertexLimits `json:"toVertexLimits,omitempty" protobuf:"bytes,7,opt,name=toVertexLimits"`
+}
+
+func (ce CombinedEdge) GetFromVertexPartitions() int {
+	if ce.FromVertexPartitionCount == nil || *ce.FromVertexPartitionCount < 1 {
+		return 1
+	}
+	return int(*ce.FromVertexPartitionCount)
+}
+
+func (ce CombinedEdge) GetToVertexPartitionCount() int {
+	// The controller is responsible for setting the right value of the toPartitions.
+	// For example, a non-keyed reduce vertex having partitions > 1 should have toPartitions = 1.
+	if ce.ToVertexPartitionCount == nil || *ce.ToVertexPartitionCount < 1 {
+		return 1
+	}
+	return int(*ce.ToVertexPartitionCount)
 }
 
 type ForwardConditions struct {
@@ -73,17 +105,6 @@ func (tc TagConditions) GetOperator() LogicOperator {
 	}
 }
 
-type EdgeLimits struct {
-	// BufferMaxLength is used to define the max length of a buffer.
-	// It overrides the settings from pipeline limits.
-	// +optional
-	BufferMaxLength *uint64 `json:"bufferMaxLength,omitempty" protobuf:"varint,1,opt,name=bufferMaxLength"`
-	// BufferUsageLimit is used to define the percentage of the buffer usage limit, a valid value should be less than 100, for example, 85.
-	// It overrides the settings from pipeline limits.
-	// +optional
-	BufferUsageLimit *uint32 `json:"bufferUsageLimit,omitempty" protobuf:"varint,2,opt,name=bufferUsageLimit"`
-}
-
 func (e Edge) BufferFullWritingStrategy() BufferFullWritingStrategy {
 	if e.OnFull == nil {
 		return RetryUntilSuccess
@@ -96,9 +117,17 @@ func (e Edge) BufferFullWritingStrategy() BufferFullWritingStrategy {
 	}
 }
 
+func (e Edge) GetEdgeName() string {
+	return fmt.Sprintf("%s-%s", e.From, e.To)
+}
+
 type BufferFullWritingStrategy string
 
 const (
 	RetryUntilSuccess BufferFullWritingStrategy = "retryUntilSuccess"
 	DiscardLatest     BufferFullWritingStrategy = "discardLatest"
 )
+
+func GenerateEdgeBucketName(namespace, pipeline, from, to string) string {
+	return fmt.Sprintf("%s-%s-%s-%s", namespace, pipeline, from, to)
+}

@@ -18,6 +18,7 @@ package wal
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -75,15 +76,15 @@ func (w *WAL) isEnd() bool {
 // decodeWALHeader decodes the header which is encoded by encodeWALHeader.
 func decodeWALHeader(buf io.Reader) (*partition.ID, error) {
 	var err error
-	// read the fixed vals
+	// read the fixed values
 	var hp = new(walHeaderPreamble)
 	err = binary.Read(buf, binary.LittleEndian, hp)
 	if err != nil {
 		return nil, err
 	}
-	// read the variadic key
-	var key = make([]rune, hp.SLen)
-	err = binary.Read(buf, binary.LittleEndian, key)
+	// read the variadic slot
+	var slot = make([]rune, hp.SLen)
+	err = binary.Read(buf, binary.LittleEndian, slot)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +92,7 @@ func decodeWALHeader(buf io.Reader) (*partition.ID, error) {
 	return &partition.ID{
 		Start: time.UnixMilli(hp.S).In(location),
 		End:   time.UnixMilli(hp.E).In(location),
-		Slot:  string(key),
+		Slot:  string(slot),
 	}, nil
 }
 
@@ -111,7 +112,7 @@ func (w *WAL) Read(size int64) ([]*isb.ReadMessage, bool, error) {
 	for size > w.rOffset-start && !w.isEnd() {
 		message, sizeRead, err := decodeReadMessage(w.fp)
 		if err != nil {
-			if err == errChecksumMismatch {
+			if errors.Is(err, errChecksumMismatch) {
 				w.corrupted = true
 			}
 			return nil, false, err

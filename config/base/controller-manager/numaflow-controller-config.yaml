@@ -37,6 +37,10 @@ data:
       jetstream:
         # Default JetStream settings, could be overridden by InterStepBufferService specs
         settings: |
+          # https://docs.nats.io/running-a-nats-service/configuration#limits
+          # Only support to configure "max_payload".
+          # Max payload size in bytes, defaults to 1 MB. It is not recommended to use values over 8MB but max_payload can be set up to 64MB.
+          max_payload: 1048576
           # https://docs.nats.io/running-a-nats-service/configuration#jetstream
           # Only configure "max_memory_store" or "max_file_store", do not set "store_dir" as it has been hardcoded.
           # e.g. 1G. -1 means no limit, up to 75% of available memory. This only take effect for streams created using memory storage.
@@ -61,7 +65,7 @@ data:
             maxAckPending: 25000
           otBucket:
             maxValueSize: 0
-            history: 5
+            history: 1
             ttl: 3h
             maxBytes: 0
             # 0: File, 1: Memory
@@ -77,7 +81,7 @@ data:
             replicas: 3
         versions:
         - version: latest
-          natsImage: nats:2.9.15
+          natsImage: nats:2.10.3
           metricsExporterImage: natsio/prometheus-nats-exporter:0.9.1
           configReloaderImage: natsio/nats-server-config-reloader:0.7.0
           startCommand: /nats-server
@@ -123,6 +127,11 @@ data:
           startCommand: /nats-server
         - version: 2.9.15
           natsImage: nats:2.9.15
+          metricsExporterImage: natsio/prometheus-nats-exporter:0.9.1
+          configReloaderImage: natsio/nats-server-config-reloader:0.7.0
+          startCommand: /nats-server
+        - version: 2.10.3
+          natsImage: nats:2.10.3
           metricsExporterImage: natsio/prometheus-nats-exporter:0.9.1
           configReloaderImage: natsio/nats-server-config-reloader:0.7.0
           startCommand: /nats-server

@@ -125,7 +125,7 @@
             "uid": "eF7wTnc4k"
           },
           "editorMode": "builder",
-          "expr": "rate(forwarder_read_total{namespace=\"$namespace\", pipeline=\"$pipeline\", vertex=\"$vertex\"}[$__rate_interval])",
+          "expr": "rate(forwarder_data_read{namespace=\"$namespace\", pipeline=\"$pipeline\", vertex=\"$vertex\"}[$__rate_interval])",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -1864,14 +1864,14 @@
           "type": "prometheus",
           "uid": "eF7wTnc4k"
         },
-        "definition": "label_values({namespace=~\"$namespace\", pipeline=~\"$pipeline\", vertex=~\"$vertex\"}, buffer)",
+        "definition": "label_values({namespace=~\"$namespace\", pipeline=~\"$pipeline\", vertex=~\"$vertex\"}, partition_name)",
         "hide": 0,
         "includeAll": false,
         "multi": false,
         "name": "buffer",
         "options": [],
         "query": {
-          "query": "label_values({namespace=~\"$namespace\", pipeline=~\"$pipeline\", vertex=~\"$vertex\"}, buffer)",
+          "query": "label_values({namespace=~\"$namespace\", pipeline=~\"$pipeline\", vertex=~\"$vertex\"}, partition_name)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 1,

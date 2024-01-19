@@ -27,7 +27,6 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 
-	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 	"github.com/numaproj/numaflow/pkg/isb/testutils"
 	redisclient "github.com/numaproj/numaflow/pkg/shared/clients/redis"
 )
@@ -40,13 +39,13 @@ func TestIsbsRedisSvc_Buffers(t *testing.T) {
 	buffer := "isbsRedisSvcBuffer"
 	stream := redisclient.GetRedisStreamName(buffer)
 	group := buffer + "-group"
-	buffers := []dfv1.Buffer{{Name: buffer, Type: dfv1.EdgeBuffer}}
+	buffers := []string{buffer}
 	redisClient := redisclient.NewRedisClient(redisOptions)
 	isbsRedisSvc := NewISBRedisSvc(redisClient)
-	assert.NoError(t, isbsRedisSvc.CreateBuffers(ctx, buffers))
+	assert.NoError(t, isbsRedisSvc.CreateBuffersAndBuckets(ctx, buffers, nil, ""))
 
 	// validate buffer
-	assert.NoError(t, isbsRedisSvc.ValidateBuffers(ctx, buffers))
+	assert.NoError(t, isbsRedisSvc.ValidateBuffersAndBuckets(ctx, buffers, nil, ""))
 
 	// Verify
 	// Add some data
@@ -62,7 +61,7 @@ func TestIsbsRedisSvc_Buffers(t *testing.T) {
 	}
 
 	// Read all the messages.
-	rqr, _ := redis.NewBufferRead(ctx, redisClient, buffer, group, "consumer").(*redis.BufferRead)
+	rqr, _ := redis.NewBufferRead(ctx, redisClient, buffer, group, "consumer", 0).(*redis.BufferRead)
 
 	readMessages, err := rqr.Read(ctx, 10)
 	assert.Nil(t, err)
@@ -79,5 +78,5 @@ func TestIsbsRedisSvc_Buffers(t *testing.T) {
 	}
 
 	// delete buffer
-	assert.NoError(t, isbsRedisSvc.DeleteBuffers(ctx, buffers))
+	assert.NoError(t, isbsRedisSvc.DeleteBuffersAndBuckets(ctx, buffers, nil, ""))
 }

@@ -5,7 +5,7 @@ The Source Data Transformer is a feature that allows users to execute custom cod
 This functionality offers two primary advantages to users:
 
 1. Event Time Assignment - It enables users to extract the event time from the message payload, providing a more precise and accurate event time than the default mechanisms like LOG_APPEND_TIME of Kafka for Kafka source, custom HTTP header for HTTP source, and others.
-1. Early Data Filtering - It filters out unwanted data at source vertex, saving the cost of creating the filtering UDF vertex and the inter-step buffer between source and the filtering UDF.
+2. Early data processing - It pre-processes the data, or filters out unwanted data at source vertex, saving the cost of creating another UDF vertex and an inter-step buffer.
 
 Source Data Transformer runs as a sidecar container in a Source Vertex Pod. Data processing in the transformer is supposed to be idempotent.
 The communication between the main container (platform code) and the sidecar container (user code) is through gRPC over Unix Domain Socket.
@@ -16,7 +16,7 @@ There are some [Built-in Transformers](builtin-transformers/README.md) that can 
 
 ## Build Your Own Transformer
 
-You can build your own transformer in multiple languages. A User Defined Transformer could be as simple as the example below in Golang. 
+You can build your own transformer in multiple languages. A User Defined Transformer could be as simple as the example below in Golang.
 In the example, the transformer extracts event times from `timestamp` of the JSON payload and assigns them to messages as new event times. It also filters out unwanted messages based on `filterOut` of the payload.
 
 ```golang
@@ -25,17 +25,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"time"
 
-	functionsdk "github.com/numaproj/numaflow-go/pkg/function"
-	"github.com/numaproj/numaflow-go/pkg/function/server"
+	"github.com/numaproj/numaflow-go/pkg/sourcetransformer"
 )
 
-func Handle(_ context.Context, keys []string, data functionsdk.Datum) functionsdk.MessageTs {
+func transform(_ context.Context, keys []string, data sourcetransformer.Datum) sourcetransformer.Messages {
 	/*
 		Input messages are in JSON format. Sample: {"timestamp": "1673239888", "filterOut": "true"}.
-		Field "timestamp" shows the real event time of the message, in format of epoch.
-		Field "filterOut" indicates whether the message should be filtered out, in format of boolean.
+		Field "timestamp" shows the real event time of the message, in the format of epoch.
+		Field "filterOut" indicates whether the message should be filtered out, in the format of boolean.
 	*/
 	var jsonObject map[string]interface{}
 	json.Unmarshal(data.Value(), &jsonObject)
@@ -46,29 +46,32 @@ func Handle(_ context.Context, keys []string, data functionsdk.Datum) functionsd
 	if ts, ok := jsonObject["timestamp"]; ok {
 		eventTime = time.Unix(int64(ts.(float64)), 0)
 	}
-	
+
 	// data filtering
 	var filterOut bool
 	if f, ok := jsonObject["filterOut"]; ok {
 		filterOut = f.(bool)
 	}
 	if filterOut {
-		return functionsdk.MessageTsBuilder().Append(functionsdk.MessageTToDrop())
+		return sourcetransformer.MessagesBuilder().Append(sourcetransformer.MessageToDrop(eventTime))
 	} else {
-		return functionsdk.MessageTsBuilder().Append(functionsdk.NewMessageT(data.Value(), eventTime).WithKeys(keys))
+		return sourcetransformer.MessagesBuilder().Append(sourcetransformer.NewMessage(data.Value(), eventTime).WithKeys(keys))
 	}
 }
 
 func main() {
-	server.New().RegisterMapperT(functionsdk.MapTFunc(Handle)).Start(context.Background())
+	err := sourcetransformer.NewServer(sourcetransformer.SourceTransformFunc(transform)).Start(context.Background())
+	if err != nil {
+		log.Panic("Failed to start source transform server: ", err)
+	}
 }
 ```
 
 Check the links below to see another transformer example in various programming languages, where we apply conditional forwarding based on the input event time.
 
-- [Python](https://github.com/numaproj/numaflow-python/tree/main/examples/function/event_time_filter)
-- [Golang](https://github.com/numaproj/numaflow-go/tree/main/pkg/function/examples/event_time_filter)
-- [Java](https://github.com/numaproj/numaflow-java/tree/main/examples/src/main/java/io/numaproj/numaflow/examples/function/map/eventtimefilter)
+- [Python](https://github.com/numaproj/numaflow-python/tree/main/examples/sourcetransform/event_time_filter)
+- [Golang](https://github.com/numaproj/numaflow-go/tree/main/pkg/sourcetransformer/examples/event_time_filter)
+- [Java](https://github.com/numaproj/numaflow-java/tree/main/examples/src/main/java/io/numaproj/numaflow/examples/sourcetransformer/eventtimefilter)
 
 After building a docker image for the written transformer, specify the image as below in the source vertex spec.
 
@@ -85,7 +88,7 @@ spec:
 
 ### Available Environment Variables
 
-Some environment variables are available in the source vertex Pods, they might be useful in you own source data transformer implementation.
+Some environment variables are available in the source transformer container, they might be useful in you own source data transformer implementation.
 
 - `NUMAFLOW_NAMESPACE` - Namespace.
 - `NUMAFLOW_POD` - Pod name.
@@ -97,8 +100,8 @@ Some environment variables are available in the source vertex Pods, they might b
 
 Configuration data can be provided to the transformer container at runtime multiple ways.
 
-* [`environment variables`](../../reference/configuration/environment-variables.md)
-* `args`
-* `command`
-* [`volumes`](../../reference/configuration/volumes.md)
-* [`init containers`](../../reference/configuration/init-containers.md)
+- [`environment variables`](../../reference/configuration/environment-variables.md)
+- `args`
+- `command`
+- [`volumes`](../../reference/configuration/volumes.md)
+- [`init containers`](../../reference/configuration/init-containers.md)

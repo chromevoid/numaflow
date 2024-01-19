@@ -28,7 +28,7 @@ import "k8s.io/apimachinery/pkg/runtime/generated.proto";
 import "k8s.io/apimachinery/pkg/runtime/schema/generated.proto";
 
 // Package-wide variables from generator "generated".
-option go_package = "v1alpha1";
+option go_package = "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1";
 
 // AbstractPodTemplate provides a template for pod customization in vertices, daemon deployments and so on.
 message AbstractPodTemplate {
@@ -128,9 +128,11 @@ message AbstractVertex {
   // +optional
   optional UDF udf = 4;
 
+  // Container template for the main numa container.
   // +optional
   optional ContainerTemplate containerTemplate = 5;
 
+  // Container template for all the vertex pod init containers spawned by numaflow, excluding the ones specified by the user.
   // +optional
   optional ContainerTemplate initContainerTemplate = 6;
 
@@ -150,14 +152,27 @@ message AbstractVertex {
   // +optional
   optional Scale scale = 10;
 
-  // List of init containers belonging to the pod.
+  // List of customized init containers belonging to the pod.
   // More info: https://kubernetes.io/docs/concepts/workloads/pods/init-containers/
   // +optional
   repeated k8s.io.api.core.v1.Container initContainers = 11;
 
-  // List of sidecar containers belonging to the pod.
+  // List of customized sidecar containers belonging to the pod.
   // +optional
   repeated k8s.io.api.core.v1.Container sidecars = 12;
+
+  // Number of partitions of the vertex owned buffers.
+  // It applies to udf and sink vertices only.
+  // +optional
+  optional int32 partitions = 13;
+
+  // Names of the side inputs used in this vertex.
+  // +optional
+  repeated string sideInputs = 14;
+
+  // Container template for the side inputs watcher container.
+  // +optional
+  optional ContainerTemplate sideInputsContainerTemplate = 15;
 }
 
 message Authorization {
@@ -182,16 +197,38 @@ message BasicAuth {
 message Blackhole {
 }
 
-message Buffer {
-  optional string name = 1;
-
-  optional string type = 2;
-}
-
 message BufferServiceConfig {
   optional RedisConfig redis = 1;
 
   optional JetStreamConfig jetstream = 2;
+}
+
+// CombinedEdge is a combination of Edge and some other properties such as vertex type, partitions, limits.
+// It's used to decorate the fromEdges and toEdges of the generated Vertex objects, so that in the vertex pod,
+// it knows the properties of the connected vertices, for example, how many partitioned buffers I should write
+// to, what is the write buffer length, etc.
+message CombinedEdge {
+  optional Edge edge = 1;
+
+  // From vertex type.
+  optional string fromVertexType = 2;
+
+  // The number of partitions of the from vertex, if not provided, the default value is set to "1".
+  // +optional
+  optional int32 fromVertexPartitionCount = 3;
+
+  // +optional
+  optional VertexLimits fromVertexLimits = 4;
+
+  // To vertex type.
+  optional string toVertexType = 5;
+
+  // The number of partitions of the to vertex, if not provided, the default value is set to "1".
+  // +optional
+  optional int32 toVertexPartitionCount = 6;
+
+  // +optional
+  optional VertexLimits toVertexLimits = 7;
 }
 
 // Container is used to define the container properties for user defined functions, sinks, etc.
@@ -269,39 +306,22 @@ message Edge {
   // +optional
   optional ForwardConditions conditions = 3;
 
-  // Limits define the limitations such as buffer read batch size for the edge, will override pipeline level settings.
-  // +optional
-  optional EdgeLimits limits = 4;
-
-  // Parallelism is only effective when the "to" vertex is a reduce vertex,
-  // if it's not provided, the default value is set to "1".
-  // Parallelism is ignored when the "to" vertex is not a reduce vertex.
-  // +optional
-  optional int32 parallelism = 5;
-
   // OnFull specifies the behaviour for the write actions when the inter step buffer is full.
   // There are currently two options, retryUntilSuccess and discardLatest.
   // if not provided, the default value is set to "retryUntilSuccess"
   // +kubebuilder:validation:Enum=retryUntilSuccess;discardLatest
   // +optional
-  optional string onFull = 6;
-}
-
-message EdgeLimits {
-  // BufferMaxLength is used to define the max length of a buffer.
-  // It overrides the settings from pipeline limits.
-  // +optional
-  optional uint64 bufferMaxLength = 1;
-
-  // BufferUsageLimit is used to define the percentage of the buffer usage limit, a valid value should be less than 100, for example, 85.
-  // It overrides the settings from pipeline limits.
-  // +optional
-  optional uint32 bufferUsageLimit = 2;
+  optional string onFull = 4;
 }
 
 // FixedWindow describes a fixed window
 message FixedWindow {
+  // Length is the duration of the fixed window.
   optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration length = 1;
+
+  // +optional
+  // Streaming should be set to true if the reduce udf is streaming.
+  optional bool streaming = 2;
 }
 
 message ForwardConditions {
@@ -360,10 +380,19 @@ message GeneratorSource {
   optional int32 msgSize = 3;
 
   // KeyCount is the number of unique keys in the payload
+  // +optional
   optional int32 keyCount = 4;
 
   // Value is an optional uint64 value to be written in to the payload
+  // +optional
   optional uint64 value = 5;
+
+  // Jitter is the jitter for the message generation, used to simulate out of order messages
+  // for example if the jitter is 10s, then the message's event time will be delayed by a random
+  // time between 0 and 10s which will result in the message being out of order by 0 to 10s
+  // +kubebuilder:default="0s"
+  // +optional
+  optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration jitter = 6;
 }
 
 message GetDaemonDeploymentReq {
@@ -458,6 +487,16 @@ message GetRedisStatefulSetSpecReq {
   optional string healthConfigMapName = 15;
 }
 
+message GetSideInputDeploymentReq {
+  optional string isbSvcType = 1;
+
+  optional string image = 2;
+
+  optional string pullPolicy = 3;
+
+  repeated k8s.io.api.core.v1.EnvVar env = 4;
+}
+
 message GetVertexPodSpecReq {
   optional string isbSvcType = 1;
 
@@ -466,6 +505,8 @@ message GetVertexPodSpecReq {
   optional string pullPolicy = 3;
 
   repeated k8s.io.api.core.v1.EnvVar env = 4;
+
+  optional string sideInputsStoreName = 5;
 }
 
 // GroupBy indicates it is a reducer UDF
@@ -492,6 +533,22 @@ message HTTPSource {
   // Whether to create a ClusterIP Service
   // +optional
   optional bool service = 2;
+}
+
+message IdleSource {
+  // Threshold is the duration after which a source is marked as Idle due to lack of data.
+  // Ex: If watermark found to be idle after the Threshold duration then the watermark is progressed by `IncrementBy`.
+  optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration threshold = 1;
+
+  // StepInterval is the duration between the subsequent increment of the watermark as long the source remains Idle.
+  // The default value is 0s which means that once we detect idle source, we will be incrementing the watermark by
+  // `IncrementBy` for time we detect that we source is empty (in other words, this will be a very frequent update).
+  // +kubebuilder:default="0s"
+  // +optional
+  optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration stepInterval = 2;
+
+  // IncrementBy is the duration to be added to the current watermark to progress the watermark when source is idling.
+  optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration incrementBy = 3;
 }
 
 // +genclient
@@ -565,9 +622,10 @@ message JetStreamBufferService {
   // +optional
   optional AbstractPodTemplate abstractPodTemplate = 7;
 
-  // JetStream configuration, if not specified, global settings in numaflow-controller-config will be used.
-  // See https://docs.nats.io/running-a-nats-service/configuration#jetstream.
-  // Only configure "max_memory_store" or "max_file_store", do not set "store_dir" as it has been hardcoded.
+  // Nats/JetStream configuration, if not specified, global settings in numaflow-controller-config will be used.
+  // See https://docs.nats.io/running-a-nats-service/configuration#limits and https://docs.nats.io/running-a-nats-service/configuration#jetstream.
+  // For limits, only "max_payload" is supported for configuration, defaults to 1048576 (1MB), not recommended to use values over 8388608 (8MB) but max_payload can be set up to 67108864 (64MB).
+  // For jetstream, only "max_memory_store" and "max_file_store" are supported for configuration, do not set "store_dir" as it has been hardcoded.
   // +optional
   optional string settings = 8;
 
@@ -604,7 +662,7 @@ message JetStreamConfig {
   optional NatsAuth auth = 2;
 
   // +optional
-  optional string bufferConfig = 3;
+  optional string streamConfig = 3;
 
   // TLS enabled or not
   optional bool tlsEnabled = 4;
@@ -685,6 +743,11 @@ message Lifecycle {
   // +kubebuilder:default=Running
   // +optional
   optional string desiredPhase = 2;
+
+  // PauseGracePeriodSeconds used to pause pipeline gracefully
+  // +kubebuilder:default=30
+  // +optional
+  optional int32 pauseGracePeriodSeconds = 3;
 }
 
 message Log {
@@ -812,12 +875,12 @@ message Pipeline {
 }
 
 message PipelineLimits {
-  // Read batch size for all the vertices in the pipeline, can be overridden by the vertex's limit settings
+  // Read batch size for all the vertices in the pipeline, can be overridden by the vertex's limit settings.
   // +kubebuilder:default=500
   // +optional
   optional uint64 readBatchSize = 1;
 
-  // BufferMaxLength is used to define the max length of a buffer
+  // BufferMaxLength is used to define the max length of a buffer.
   // Only applies to UDF and Source vertices as only they do buffer write.
   // It can be overridden by the settings in vertex limits.
   // +kubebuilder:default=30000
@@ -857,7 +920,7 @@ message PipelineSpec {
   repeated Edge edges = 3;
 
   // Lifecycle define the Lifecycle properties
-  // +kubebuilder:default={"deleteGracePeriodSeconds": 30, "desiredPhase": Running}
+  // +kubebuilder:default={"deleteGracePeriodSeconds": 30, "desiredPhase": Running, "pauseGracePeriodSeconds": 30}
   // +optional
   optional Lifecycle lifecycle = 4;
 
@@ -871,9 +934,13 @@ message PipelineSpec {
   // +optional
   optional Watermark watermark = 6;
 
-  // Templates is used to customize additional kubernetes resources required for the Pipeline
+  // Templates are used to customize additional kubernetes resources required for the Pipeline
   // +optional
   optional Templates templates = 7;
+
+  // SideInputs defines the Side Inputs of a pipeline.
+  // +optional
+  repeated SideInput sideInputs = 8;
 }
 
 message PipelineStatus {
@@ -946,21 +1013,6 @@ message RedisSettings {
   optional string sentinel = 4;
 }
 
-message RedisStreamsSource {
-  // RedisConfig contains connectivity info
-  optional RedisConfig redisConfig = 1;
-
-  optional string stream = 2;
-
-  optional string consumerGroup = 3;
-
-  // if true, stream starts being read from the beginning; otherwise, the latest
-  optional bool readFromBeginning = 4;
-
-  // +optional
-  optional TLS tls = 5;
-}
-
 message SASL {
   // SASL mechanism to use
   optional string mechanism = 1;
@@ -1004,11 +1056,12 @@ message Scale {
   // +optional
   optional uint32 lookbackSeconds = 4;
 
+  // Deprecated: Use scaleUpCooldownSeconds and scaleDownCooldownSeconds instead.
   // Cooldown seconds after a scaling operation before another one.
   // +optional
   optional uint32 cooldownSeconds = 5;
 
-  // After scaling down to 0, sleep how many seconds before scaling up to peek.
+  // After scaling down the source vertex to 0, sleep how many seconds before scaling the source vertex back up to peek.
   // +optional
   optional uint32 zeroReplicaSleepSeconds = 6;
 
@@ -1018,23 +1071,69 @@ message Scale {
   // +optional
   optional uint32 targetProcessingSeconds = 7;
 
-  // TargetBufferUsage is used to define the target percentage of the buffer availability.
+  // TargetBufferAvailability is used to define the target percentage of the buffer availability.
   // A valid and meaningful value should be less than the BufferUsageLimit defined in the Edge spec (or Pipeline spec), for example, 50.
   // It only applies to UDF and Sink vertices because only they have buffers to read.
-  // Deprecated: use targetBufferAvailability instead. Will be removed in v0.9
   // +optional
-  optional uint32 targetBufferUsage = 8;
+  optional uint32 targetBufferAvailability = 8;
 
   // ReplicasPerScale defines maximum replicas can be scaled up or down at once.
   // The is use to prevent too aggressive scaling operations
   // +optional
   optional uint32 replicasPerScale = 9;
 
-  // TargetBufferAvailability is used to define the target percentage of the buffer availability.
-  // A valid and meaningful value should be less than the BufferUsageLimit defined in the Edge spec (or Pipeline spec), for example, 50.
-  // It only applies to UDF and Sink vertices because only they have buffers to read.
+  // ScaleUpCooldownSeconds defines the cooldown seconds after a scaling operation, before a follow-up scaling up.
+  // It defaults to the CooldownSeconds if not set.
   // +optional
-  optional uint32 targetBufferAvailability = 10;
+  optional uint32 scaleUpCooldownSeconds = 10;
+
+  // ScaleDownCooldownSeconds defines the cooldown seconds after a scaling operation, before a follow-up scaling down.
+  // It defaults to the CooldownSeconds if not set.
+  // +optional
+  optional uint32 scaleDownCooldownSeconds = 11;
+}
+
+// SessionWindow describes a session window
+message SessionWindow {
+  // Timeout is the duration of inactivity after which a session window closes.
+  optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration timeout = 1;
+}
+
+// SideInput defines information of a Side Input
+message SideInput {
+  optional string name = 1;
+
+  optional Container container = 2;
+
+  // +optional
+  // +patchStrategy=merge
+  // +patchMergeKey=name
+  repeated k8s.io.api.core.v1.Volume volumes = 3;
+
+  optional SideInputTrigger trigger = 4;
+}
+
+message SideInputTrigger {
+  // The schedule to trigger the retrievement of the side input data.
+  // It supports cron format, for example, "0 30 * * * *".
+  // Or interval based format, such as "@hourly", "@every 1h30m", etc.
+  optional string schedule = 1;
+
+  // +optional
+  optional string timezone = 2;
+}
+
+message SideInputsManagerTemplate {
+  // +optional
+  optional AbstractPodTemplate abstractPodTemplate = 1;
+
+  // Template for the side inputs manager numa container
+  // +optional
+  optional ContainerTemplate containerTemplate = 2;
+
+  // Template for the side inputs manager init container
+  // +optional
+  optional ContainerTemplate initContainerTemplate = 3;
 }
 
 message Sink {
@@ -1049,9 +1148,15 @@ message Sink {
 
 // SlidingWindow describes a sliding window
 message SlidingWindow {
+  // Length is the duration of the sliding window.
   optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration length = 1;
 
+  // Slide is the slide parameter that controls the frequency at which the sliding window is created.
   optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration slide = 2;
+
+  // +optional
+  // Streaming should be set to true if the reduce udf is streaming.
+  optional bool streaming = 3;
 }
 
 message Source {
@@ -1068,10 +1173,10 @@ message Source {
   optional NatsSource nats = 4;
 
   // +optional
-  optional RedisStreamsSource redisStreams = 5;
+  optional UDTransformer transformer = 5;
 
   // +optional
-  optional UDTransformer transformer = 6;
+  optional UDSource udSource = 6;
 }
 
 // Status is a common structure which can be used for Status field.
@@ -1112,17 +1217,25 @@ message TagConditions {
 }
 
 message Templates {
-  // DaemonTemplate is used to customize the Daemon Deployment
+  // DaemonTemplate is used to customize the Daemon Deployment.
   // +optional
   optional DaemonTemplate daemon = 1;
 
-  // JobTemplate is used to customize Jobs
+  // JobTemplate is used to customize Jobs.
   // +optional
   optional JobTemplate job = 2;
+
+  // SideInputsManagerTemplate is used to customize the Side Inputs Manager.
+  // +optional
+  optional SideInputsManagerTemplate sideInputsManager = 3;
+
+  // VertexTemplate is used to customize the vertices of the pipeline.
+  // +optional
+  optional VertexTemplate vertex = 4;
 }
 
 message Transformer {
-  // +kubebuilder:validation:Enum=eventTimeExtractor;filter
+  // +kubebuilder:validation:Enum=eventTimeExtractor;filter;timeExtractionFilter
   optional string name = 1;
 
   // +optional
@@ -1144,6 +1257,10 @@ message UDF {
 }
 
 message UDSink {
+  optional Container container = 1;
+}
+
+message UDSource {
   optional Container container = 1;
 }
 
@@ -1195,6 +1312,16 @@ message VertexLimits {
   // It overrides the settings from pipeline limits.
   // +optional
   optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration readTimeout = 2;
+
+  // BufferMaxLength is used to define the max length of a buffer.
+  // It overrides the settings from pipeline limits.
+  // +optional
+  optional uint64 bufferMaxLength = 3;
+
+  // BufferUsageLimit is used to define the percentage of the buffer usage limit, a valid value should be less than 100, for example, 85.
+  // It overrides the settings from pipeline limits.
+  // +optional
+  optional uint32 bufferUsageLimit = 4;
 }
 
 // +kubebuilder:object:root=true
@@ -1218,10 +1345,10 @@ message VertexSpec {
   optional int32 replicas = 4;
 
   // +optional
-  repeated Edge fromEdges = 5;
+  repeated CombinedEdge fromEdges = 5;
 
   // +optional
-  repeated Edge toEdges = 6;
+  repeated CombinedEdge toEdges = 6;
 
   // Watermark indicates watermark progression in the vertex, it's populated from the pipeline watermark settings.
   // +kubebuilder:default={"disabled": false}
@@ -1243,6 +1370,19 @@ message VertexStatus {
   optional k8s.io.apimachinery.pkg.apis.meta.v1.Time lastScaledAt = 4;
 }
 
+message VertexTemplate {
+  // +optional
+  optional AbstractPodTemplate abstractPodTemplate = 1;
+
+  // Template for the vertex numa container
+  // +optional
+  optional ContainerTemplate containerTemplate = 2;
+
+  // Template for the vertex init container
+  // +optional
+  optional ContainerTemplate initContainerTemplate = 3;
+}
+
 message Watermark {
   // Disabled toggles the watermark propagation, defaults to false.
   // +kubebuilder:default=false
@@ -1253,6 +1393,10 @@ message Watermark {
   // +kubebuilder:default="0s"
   // +optional
   optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration maxDelay = 2;
+
+  // IdleSource defines the idle watermark properties, it could be configured in case source is idling.
+  // +optional
+  optional IdleSource idleSource = 3;
 }
 
 // Window describes windowing strategy
@@ -1262,5 +1406,8 @@ message Window {
 
   // +optional
   optional SlidingWindow sliding = 2;
+
+  // +optional
+  optional SessionWindow session = 3;
 }
 

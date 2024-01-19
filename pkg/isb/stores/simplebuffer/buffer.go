@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,13 +35,14 @@ import (
 
 // InMemoryBuffer implements ISB interface.
 type InMemoryBuffer struct {
-	name     string
-	size     int64
-	buffer   []elem
-	writeIdx int64
-	readIdx  int64
-	options  *options
-	rwlock   *sync.RWMutex
+	name         string
+	size         int64
+	buffer       []elem
+	writeIdx     int64
+	readIdx      int64
+	partitionIdx int32
+	options      *options
+	rwlock       *sync.RWMutex
 }
 
 var _ isb.BufferReader = (*InMemoryBuffer)(nil)
@@ -56,7 +58,7 @@ type elem struct {
 }
 
 // NewInMemoryBuffer returns a new buffer.
-func NewInMemoryBuffer(name string, size int64, opts ...Option) *InMemoryBuffer {
+func NewInMemoryBuffer(name string, size int64, partition int32, opts ...Option) *InMemoryBuffer {
 
 	bufferOptions := &options{
 		readTimeOut:               time.Second,                // default read time out
@@ -68,13 +70,14 @@ func NewInMemoryBuffer(name string, size int64, opts ...Option) *InMemoryBuffer 
 	}
 
 	sb := &InMemoryBuffer{
-		name:     name,
-		size:     size,
-		buffer:   make([]elem, size),
-		writeIdx: int64(0),
-		readIdx:  int64(0),
-		rwlock:   new(sync.RWMutex),
-		options:  bufferOptions,
+		name:         name,
+		size:         size,
+		buffer:       make([]elem, size),
+		writeIdx:     int64(0),
+		readIdx:      int64(0),
+		partitionIdx: partition,
+		rwlock:       new(sync.RWMutex),
+		options:      bufferOptions,
 	}
 	return sb
 }
@@ -93,14 +96,16 @@ func (b *InMemoryBuffer) GetName() string {
 	return b.name
 }
 
+// GetPartitionIdx returns the partitionIdx.
+func (b *InMemoryBuffer) GetPartitionIdx() int32 {
+	b.rwlock.RLock()
+	defer b.rwlock.RUnlock()
+	return b.partitionIdx
+}
+
 func (b *InMemoryBuffer) Pending(_ context.Context) (int64, error) {
 	// TODO: not implemented
 	return isb.PendingNotAvailable, nil
-}
-
-func (b *InMemoryBuffer) Rate(_ context.Context) (float64, error) {
-	// TODO: not implemented
-	return isb.RateNotAvailable, nil
 }
 
 // Close does nothing.
@@ -141,9 +146,7 @@ func (b *InMemoryBuffer) Write(_ context.Context, messages []isb.Message) ([]isb
 			errs[idx] = nil
 			b.buffer[currentIdx].dirty = true
 			b.writeIdx = (currentIdx + 1) % b.size
-			writeOffsets[idx] = isb.SimpleIntOffset(func() int64 {
-				return currentIdx
-			})
+			writeOffsets[idx] = isb.NewSimpleIntPartitionOffset(currentIdx, b.partitionIdx)
 			// access buffer via lock
 			b.rwlock.Unlock()
 		} else {
@@ -215,7 +218,7 @@ func (b *InMemoryBuffer) Read(ctx context.Context, count int64) ([]*isb.ReadMess
 			}
 		}
 
-		readMessage := isb.ReadMessage{Message: msg, ReadOffset: isb.SimpleIntOffset(func() int64 { return currentIdx })}
+		readMessage := isb.ReadMessage{Message: msg, ReadOffset: isb.NewSimpleIntPartitionOffset(currentIdx, b.partitionIdx)}
 
 		readMessages = append(readMessages, &readMessage)
 	}
@@ -240,7 +243,7 @@ func buildMessage(header []byte, body []byte) (msg isb.Message, err error) {
 func (b *InMemoryBuffer) Ack(_ context.Context, offsets []isb.Offset) []error {
 	errs := make([]error, len(offsets))
 	for index, offset := range offsets {
-		intOffset, err := strconv.Atoi(offset.String())
+		intOffset, err := strconv.Atoi(strings.Split(offset.String(), "-")[0])
 		if err != nil {
 			errs[index] = isb.MessageAckErr{Name: b.name, Message: err.Error(), Offset: isb.Offset(offset)}
 			continue

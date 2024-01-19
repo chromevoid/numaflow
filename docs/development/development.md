@@ -4,7 +4,7 @@ This doc explains how to set up a development environment for Numaflow.
 
 ### Install required tools
 
-1. [`go`](https://golang.org/doc/install) 1.19+.
+1. [`go`](https://golang.org/doc/install) 1.20+.
 1. [`git`](https://help.github.com/articles/set-up-git/).
 1. [`kubectl`](https://kubernetes.io/docs/tasks/tools/install-kubectl/).
 1. [`protoc`](https://github.com/protocolbuffers/protobuf) 3.19 for compiling protocol buffers.
@@ -24,6 +24,17 @@ kind create cluster
 
 # Get kubeconfig for the cluster
 kind export kubeconfig
+```
+
+#### Metrics Server
+
+Please install the metrics server if your local Kubernetes cluster does not bring it by default (e.g., Kind).
+Without the [metrics-server](https://github.com/kubernetes-sigs/metrics-server), we will not be able to see the pods in 
+the UI.
+
+```shell
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml 
+kubectl patch -n kube-system deployment metrics-server --type=json -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
 ```
 
 ### Useful Commands
@@ -47,7 +58,7 @@ kind export kubeconfig
   Build container image, and import it to `k3d`, `kind`, or `minikube` cluster if corresponding `KUBECONFIG` is sourced.
 
 - `make docs`
-  Convert the docs to Github pages, check if there's any error.
+  Convert the docs to GitHub pages, check if there's any error.
 
 - `make docs-serve`
   Start [an HTTP server](http://127.0.0.1:8000/) on your local to host the docs generated Github pages.

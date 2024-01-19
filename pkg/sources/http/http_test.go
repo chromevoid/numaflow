@@ -23,14 +23,24 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
-	"github.com/numaproj/numaflow/pkg/forward"
-	"github.com/numaproj/numaflow/pkg/forward/applier"
+	"github.com/numaproj/numaflow/pkg/forwarder"
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/isb/stores/simplebuffer"
+	"github.com/numaproj/numaflow/pkg/sources/forward/applier"
 	"github.com/numaproj/numaflow/pkg/watermark/generic"
 	"github.com/numaproj/numaflow/pkg/watermark/store"
-	"github.com/numaproj/numaflow/pkg/watermark/store/noop"
+	"github.com/numaproj/numaflow/pkg/watermark/wmb"
 )
+
+type myForwardToAllTest struct {
+}
+
+func (f myForwardToAllTest) WhereTo(_ []string, _ []string) ([]forwarder.VertexBuffer, error) {
+	return []forwarder.VertexBuffer{{
+		ToVertexName:         "test",
+		ToVertexPartitionIdx: 0,
+	}}, nil
+}
 
 func TestWithBufferSize(t *testing.T) {
 	h := &httpSource{
@@ -66,17 +76,23 @@ func Test_NewHTTP(t *testing.T) {
 		Hostname: "test-host",
 		Replica:  0,
 	}
-	dest := []isb.BufferWriter{simplebuffer.NewInMemoryBuffer("test", 100)}
-	publishWMStores := store.BuildWatermarkStore(noop.NewKVNoOpStore(), noop.NewKVNoOpStore())
-	fetchWatermark, publishWatermark := generic.BuildNoOpWatermarkProgressorsFromBufferMap(map[string]isb.BufferWriter{})
-	h, err := New(vi, dest, forward.All, applier.Terminal, fetchWatermark, publishWatermark, publishWMStores)
+	dest := simplebuffer.NewInMemoryBuffer("test", 100, 0)
+	toBuffers := map[string][]isb.BufferWriter{
+		"test": {dest},
+	}
+	publishWMStores, _ := store.BuildNoOpWatermarkStore()
+	fetchWatermark, _ := generic.BuildNoOpSourceWatermarkProgressorsFromBufferMap(map[string][]isb.BufferWriter{})
+	toVertexWmStores := map[string]store.WatermarkStore{
+		"test": publishWMStores,
+	}
+	h, err := New(vi, toBuffers, myForwardToAllTest{}, applier.Terminal, fetchWatermark, toVertexWmStores, publishWMStores, wmb.NewIdleManager(len(toBuffers)))
 	assert.NoError(t, err)
-	assert.False(t, h.ready)
+	assert.False(t, h.(*httpSource).ready)
 	assert.Equal(t, v.Spec.Name, h.GetName())
-	assert.NotNil(t, h.forwarder)
-	assert.NotNil(t, h.shutdown)
+	assert.NotNil(t, h.(*httpSource).forwarder)
+	assert.NotNil(t, h.(*httpSource).shutdown)
 	_ = h.Start()
-	assert.True(t, h.ready)
+	assert.True(t, h.(*httpSource).ready)
 	h.Stop()
-	assert.False(t, h.ready)
+	assert.False(t, h.(*httpSource).ready)
 }

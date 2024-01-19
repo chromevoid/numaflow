@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/pointer"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -55,13 +56,14 @@ type pipelineReconciler struct {
 	client client.Client
 	scheme *runtime.Scheme
 
-	config *reconciler.GlobalConfig
-	image  string
-	logger *zap.SugaredLogger
+	config   *reconciler.GlobalConfig
+	image    string
+	logger   *zap.SugaredLogger
+	recorder record.EventRecorder
 }
 
-func NewReconciler(client client.Client, scheme *runtime.Scheme, config *reconciler.GlobalConfig, image string, logger *zap.SugaredLogger) reconcile.Reconciler {
-	return &pipelineReconciler{client: client, scheme: scheme, config: config, image: image, logger: logger}
+func NewReconciler(client client.Client, scheme *runtime.Scheme, config *reconciler.GlobalConfig, image string, logger *zap.SugaredLogger, recorder record.EventRecorder) reconcile.Reconciler {
+	return &pipelineReconciler{client: client, scheme: scheme, config: config, image: image, logger: logger, recorder: recorder}
 }
 
 func (r *pipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -102,7 +104,8 @@ func (r *pipelineReconciler) reconcile(ctx context.Context, pl *dfv1.Pipeline) (
 			if time.Now().Before(pl.DeletionTimestamp.Add(time.Duration(pl.Spec.Lifecycle.GetDeleteGracePeriodSeconds()) * time.Second)) {
 				safeToDelete, err := r.safeToDelete(ctx, pl)
 				if err != nil {
-					log.Errorw("Failed to check if it's safe to delete the pipeline", zap.Error(err))
+					logMsg := fmt.Sprintf("Failed to check if it's safe to delete pipeline %s: %v", pl.Name, err.Error())
+					log.Error(logMsg)
 					return ctrl.Result{}, err
 				}
 
@@ -114,7 +117,9 @@ func (r *pipelineReconciler) reconcile(ctx context.Context, pl *dfv1.Pipeline) (
 			}
 			// Finalizer logic should be added here.
 			if err := r.cleanUpBuffers(ctx, pl, log); err != nil {
-				log.Errorw("Failed to create buffer clean up job", zap.Error(err))
+				logMsg := fmt.Sprintf("Failed to create buffer clean up job: %v", err.Error())
+				log.Error(logMsg)
+				r.recorder.Event(pl, corev1.EventTypeWarning, "ReconcilePipelineFailed", logMsg)
 				return ctrl.Result{}, err
 
 			}
@@ -125,17 +130,24 @@ func (r *pipelineReconciler) reconcile(ctx context.Context, pl *dfv1.Pipeline) (
 
 	// New, or reconciliation failed pipeline
 	if pl.Status.Phase == dfv1.PipelinePhaseUnknown || pl.Status.Phase == dfv1.PipelinePhaseFailed {
-		return r.reconcileNonLifecycleChanges(ctx, pl)
+		result, err := r.reconcileNonLifecycleChanges(ctx, pl)
+		if err != nil {
+			r.recorder.Eventf(pl, corev1.EventTypeWarning, "ReconcilePipelineFailed", "Failed to reconcile pipeline: %v", err.Error())
+		}
+		return result, err
 	}
 
 	if oldPhase := pl.Status.Phase; oldPhase != pl.Spec.Lifecycle.GetDesiredPhase() {
 		requeue, err := r.updateDesiredState(ctx, pl)
 		if err != nil {
-			log.Errorw("Updated desired pipeline phase failed", zap.Error(err))
+			logMsg := fmt.Sprintf("Updated desired pipeline phase failed: %v", zap.Error(err))
+			log.Error(logMsg)
+			r.recorder.Eventf(pl, corev1.EventTypeWarning, "ReconcilePipelineFailed", logMsg)
 			return ctrl.Result{}, err
 		}
 		if pl.Status.Phase != oldPhase {
 			log.Infow("Updated pipeline phase", zap.String("originalPhase", string(oldPhase)), zap.String("currentPhase", string(pl.Status.Phase)))
+			r.recorder.Eventf(pl, corev1.EventTypeNormal, "UpdatePipelinePhase", "Updated pipeline phase from %s to %s", string(oldPhase), string(pl.Status.Phase))
 		}
 		if requeue {
 			return ctrl.Result{RequeueAfter: dfv1.DefaultRequeueAfter}, nil
@@ -144,7 +156,11 @@ func (r *pipelineReconciler) reconcile(ctx context.Context, pl *dfv1.Pipeline) (
 	}
 
 	// Regular pipeline update
-	return r.reconcileNonLifecycleChanges(ctx, pl)
+	result, err := r.reconcileNonLifecycleChanges(ctx, pl)
+	if err != nil {
+		r.recorder.Eventf(pl, corev1.EventTypeWarning, "ReconcilePipelineFailed", "Failed to reconcile pipeline: %v", err.Error())
+	}
+	return result, err
 }
 
 // reconcileNonLifecycleChanges do the jobs not related to pipeline lifecycle changes.
@@ -184,27 +200,47 @@ func (r *pipelineReconciler) reconcileNonLifecycleChanges(ctx context.Context, p
 		return ctrl.Result{}, fmt.Errorf("isbsvc not ready")
 	}
 
+	// Create or update the Side Inputs Manager deployments
+	if err := r.createOrUpdateSIMDeployments(ctx, pl, isbSvc.Status.Config); err != nil {
+		log.Errorw("Failed to create or update Side Inputs Manager deployments", zap.Error(err))
+		pl.Status.MarkDeployFailed("CreateOrUpdateSIMDeploymentsFailed", err.Error())
+		r.recorder.Eventf(pl, corev1.EventTypeWarning, "CreateOrUpdateSIMDeploymentsFailed", "Failed to create or update Side Inputs Manager deployments: %w", err.Error())
+		return ctrl.Result{}, err
+	}
+
 	existingObjs, err := r.findExistingVertices(ctx, pl)
 	if err != nil {
 		log.Errorw("Failed to find existing vertices", zap.Error(err))
 		pl.Status.MarkDeployFailed("ListVerticesFailed", err.Error())
 		return ctrl.Result{}, err
 	}
-	oldBuffers := make(map[string]dfv1.Buffer)
-	newBuffers := make(map[string]dfv1.Buffer)
+	oldBuffers := make(map[string]string)
+	newBuffers := make(map[string]string)
+	oldBuckets := make(map[string]string)
+	newBuckets := make(map[string]string)
 	for _, v := range existingObjs {
-		for _, b := range v.GetFromBuffers() {
-			oldBuffers[b.Name] = b
+		for _, b := range v.OwnedBuffers() {
+			oldBuffers[b] = b
 		}
-		for _, b := range v.GetToBuffers() {
-			oldBuffers[b.Name] = b
+		for _, b := range v.GetFromBuckets() {
+			oldBuckets[b] = b
+		}
+		for _, b := range v.GetToBuckets() {
+			oldBuckets[b] = b
 		}
 	}
 	for _, b := range pl.GetAllBuffers() {
-		if _, existing := oldBuffers[b.Name]; existing {
-			delete(oldBuffers, b.Name)
+		if _, existing := oldBuffers[b]; existing {
+			delete(oldBuffers, b)
 		} else {
-			newBuffers[b.Name] = b
+			newBuffers[b] = b
+		}
+	}
+	for _, b := range pl.GetAllBuckets() {
+		if _, existing := oldBuckets[b]; existing {
+			delete(oldBuckets, b)
+		} else {
+			newBuckets[b] = b
 		}
 	}
 	newObjs := buildVertices(pl)
@@ -215,19 +251,23 @@ func (r *pipelineReconciler) reconcileNonLifecycleChanges(ctx context.Context, p
 					continue
 				} else {
 					pl.Status.MarkDeployFailed("CreateVertexFailed", err.Error())
+					r.recorder.Eventf(pl, corev1.EventTypeWarning, "CreateVertexFailed", "Failed to create vertex: %w", err.Error())
 					return ctrl.Result{}, fmt.Errorf("failed to create vertex, err: %w", err)
 				}
 			}
 			log.Infow("Created vertex successfully", zap.String("vertex", vertexName))
+			r.recorder.Eventf(pl, corev1.EventTypeNormal, "CreateVertexSuccess", "Created vertex %s successfully", vertexName)
 		} else {
 			if oldObj.GetAnnotations()[dfv1.KeyHash] != newObj.GetAnnotations()[dfv1.KeyHash] { // need to update
 				oldObj.Spec = newObj.Spec
 				oldObj.Annotations[dfv1.KeyHash] = newObj.GetAnnotations()[dfv1.KeyHash]
 				if err := r.client.Update(ctx, &oldObj); err != nil {
 					pl.Status.MarkDeployFailed("UpdateVertexFailed", err.Error())
+					r.recorder.Eventf(pl, corev1.EventTypeWarning, "UpdateVertexFailed", "Failed to update vertex: %w", err.Error())
 					return ctrl.Result{}, fmt.Errorf("failed to update vertex, err: %w", err)
 				}
 				log.Infow("Updated vertex successfully", zap.String("vertex", vertexName))
+				r.recorder.Eventf(pl, corev1.EventTypeNormal, "UpdateVertexSuccess", "Updated vertex %s successfully", vertexName)
 			}
 			delete(existingObjs, vertexName)
 		}
@@ -235,37 +275,49 @@ func (r *pipelineReconciler) reconcileNonLifecycleChanges(ctx context.Context, p
 	for _, v := range existingObjs {
 		if err := r.client.Delete(ctx, &v); err != nil {
 			pl.Status.MarkDeployFailed("DeleteStaleVertexFailed", err.Error())
+			r.recorder.Eventf(pl, corev1.EventTypeWarning, "DeleteStaleVertexFailed", "Failed to delete vertex: %w", err.Error())
 			return ctrl.Result{}, fmt.Errorf("failed to delete vertex, err: %w", err)
 		}
+		log.Infow("Deleted stale vertex successfully", zap.String("vertex", v.Name))
+		r.recorder.Eventf(pl, corev1.EventTypeNormal, "DeleteStaleVertexSuccess", "Deleted stale vertex %s successfully", v.Name)
 	}
 
 	// create batch job
-	if len(newBuffers) > 0 {
+	if len(newBuffers) > 0 || len(newBuckets) > 0 {
 		bfs := []string{}
-		for _, v := range newBuffers {
-			bfs = append(bfs, fmt.Sprintf("%s=%s", v.Name, v.Type))
+		for k := range newBuffers {
+			bfs = append(bfs, k)
 		}
-		args := []string{fmt.Sprintf("--buffers=%s", strings.Join(bfs, ","))}
-		batchJob := buildISBBatchJob(pl, r.image, isbSvc.Status.Config, "isbsvc-buffer-create", args, "create")
+		bks := []string{}
+		for k := range newBuckets {
+			bks = append(bks, k)
+		}
+		args := []string{fmt.Sprintf("--buffers=%s", strings.Join(bfs, ",")), fmt.Sprintf("--buckets=%s", strings.Join(bks, ","))}
+		args = append(args, fmt.Sprintf("--side-inputs-store=%s", pl.GetSideInputsStoreName()))
+		batchJob := buildISBBatchJob(pl, r.image, isbSvc.Status.Config, "isbsvc-create", args, "cre")
 		if err := r.client.Create(ctx, batchJob); err != nil && !apierrors.IsAlreadyExists(err) {
-			pl.Status.MarkDeployFailed("CreateBufferCreatingJobFailed", err.Error())
-			return ctrl.Result{}, fmt.Errorf("failed to create buffer creating job, err: %w", err)
+			pl.Status.MarkDeployFailed("CreateISBSvcCreatingJobFailed", err.Error())
+			return ctrl.Result{}, fmt.Errorf("failed to create ISB Svc creating job, err: %w", err)
 		}
-		log.Infow("Created buffer creating job successfully", zap.Any("buffers", bfs))
+		log.Infow("Created a job successfully for ISB Svc creating", zap.Any("buffers", bfs), zap.Any("buckets", bks))
 	}
 
-	if len(oldBuffers) > 0 {
+	if len(oldBuffers) > 0 || len(oldBuckets) > 0 {
 		bfs := []string{}
-		for _, v := range oldBuffers {
-			bfs = append(bfs, fmt.Sprintf("%s=%s", v.Name, v.Type))
+		for k := range oldBuffers {
+			bfs = append(bfs, k)
 		}
-		args := []string{fmt.Sprintf("--buffers=%s", strings.Join(bfs, ","))}
-		batchJob := buildISBBatchJob(pl, r.image, isbSvc.Status.Config, "isbsvc-buffer-delete", args, "delete")
+		bks := []string{}
+		for k := range oldBuckets {
+			bks = append(bks, k)
+		}
+		args := []string{fmt.Sprintf("--buffers=%s", strings.Join(bfs, ",")), fmt.Sprintf("--buckets=%s", strings.Join(bks, ","))}
+		batchJob := buildISBBatchJob(pl, r.image, isbSvc.Status.Config, "isbsvc-delete", args, "del")
 		if err := r.client.Create(ctx, batchJob); err != nil && !apierrors.IsAlreadyExists(err) {
-			pl.Status.MarkDeployFailed("CreateBufferDeletingJobFailed", err.Error())
-			return ctrl.Result{}, fmt.Errorf("failed to create buffer deleting job, err: %w", err)
+			pl.Status.MarkDeployFailed("CreateISBSvcDeletingJobFailed", err.Error())
+			return ctrl.Result{}, fmt.Errorf("failed to create ISB Svc deleting job, err: %w", err)
 		}
-		log.Infow("Created buffer deleting job successfully", zap.Any("buffers", bfs))
+		log.Infow("Created ISB Svc deleting job successfully", zap.Any("buffers", bfs), zap.Any("buckets", bks))
 	}
 
 	// Daemon service
@@ -301,6 +353,7 @@ func (r *pipelineReconciler) createOrUpdateDaemonService(ctx context.Context, pl
 		if err := r.client.Delete(ctx, existingSvc); err != nil && !apierrors.IsNotFound(err) {
 			log.Errorw("Failed to delete existing daemon service", zap.String("service", existingSvc.Name), zap.Error(err))
 			pl.Status.MarkDeployFailed("DelDaemonSvcFailed", err.Error())
+			r.recorder.Eventf(pl, corev1.EventTypeWarning, "DelDaemonSvcFailed", "Failed to delete existing daemon service: %w", err.Error())
 			return fmt.Errorf("failed to delete existing daemon service, %w", err)
 		}
 		needToCreatDaemonSvc = true
@@ -309,9 +362,11 @@ func (r *pipelineReconciler) createOrUpdateDaemonService(ctx context.Context, pl
 		if err := r.client.Create(ctx, svc); err != nil {
 			log.Errorw("Failed to create daemon service", zap.String("service", svc.Name), zap.Error(err))
 			pl.Status.MarkDeployFailed("CreateDaemonSvcFailed", err.Error())
+			r.recorder.Eventf(pl, corev1.EventTypeWarning, "CreateDaemonSvcFailed", "Failed to create daemon service: %w", err.Error())
 			return fmt.Errorf("failed to create daemon service, %w", err)
 		}
 		log.Infow("Succeeded to create a daemon service", zap.String("service", svc.Name))
+		r.recorder.Eventf(pl, corev1.EventTypeNormal, "CreateDaemonSvcSuccess", "Succeeded to create daemon service %s", svc.Name)
 	}
 	return nil
 }
@@ -334,28 +389,36 @@ func (r *pipelineReconciler) createOrUpdateDaemonDeployment(ctx context.Context,
 	deployHash := sharedutil.MustHash(deploy.Spec)
 	deploy.Annotations = map[string]string{dfv1.KeyHash: deployHash}
 	existingDeploy := &appv1.Deployment{}
+	needToCreate := false
 	if err := r.client.Get(ctx, types.NamespacedName{Namespace: pl.Namespace, Name: deploy.Name}, existingDeploy); err != nil {
-		if apierrors.IsNotFound(err) {
-			if err := r.client.Create(ctx, deploy); err != nil && !apierrors.IsAlreadyExists(err) {
-				log.Errorw("Failed to create a daemon deployment", zap.String("deployment", deploy.Name), zap.Error(err))
-				pl.Status.MarkDeployFailed("CreateDaemonDeployFailed", err.Error())
-				return fmt.Errorf("failed to create a daemon deployment, %w", err)
-			}
-			log.Infow("Succeeded to create a daemon deployment", zap.String("deployment", deploy.Name))
-		} else {
+		if !apierrors.IsNotFound(err) {
 			log.Errorw("Failed to find existing daemon deployment", zap.String("deployment", deploy.Name), zap.Error(err))
 			pl.Status.MarkDeployFailed("FindDaemonDeployFailed", err.Error())
 			return fmt.Errorf("failed to find existing daemon deployment, %w", err)
+		} else {
+			needToCreate = true
 		}
-	} else if existingDeploy.GetAnnotations()[dfv1.KeyHash] != deployHash {
-		existingDeploy.Annotations[dfv1.KeyHash] = deployHash
-		existingDeploy.Spec = deploy.Spec
-		if err := r.client.Update(ctx, existingDeploy); err != nil {
-			log.Errorw("Failed to update a daemon deployment", zap.String("deployment", existingDeploy.Name), zap.Error(err))
-			pl.Status.MarkDeployFailed("UpdateDaemonDeployFailed", err.Error())
-			return fmt.Errorf("failed to update a daemon deployment, %w", err)
+	} else {
+		if existingDeploy.GetAnnotations()[dfv1.KeyHash] != deployHash {
+			// Delete and recreate, to avoid updating immutable fields problem.
+			if err := r.client.Delete(ctx, existingDeploy); err != nil {
+				log.Errorw("Failed to delete the outdated daemon deployment", zap.String("deployment", existingDeploy.Name), zap.Error(err))
+				pl.Status.MarkDeployFailed("DeleteOldDaemonDeployFailed", err.Error())
+				r.recorder.Eventf(pl, corev1.EventTypeWarning, "DeleteOldDaemonDeployFailed", "Failed to delete the outdated daemon deployment: %w", err.Error())
+				return fmt.Errorf("failed to delete an outdated daemon deployment, %w", err)
+			}
+			needToCreate = true
 		}
-		log.Infow("Succeeded to update daemon deployment", zap.String("deployment", existingDeploy.Name))
+	}
+	if needToCreate {
+		if err := r.client.Create(ctx, deploy); err != nil && !apierrors.IsAlreadyExists(err) {
+			log.Errorw("Failed to create a daemon deployment", zap.String("deployment", deploy.Name), zap.Error(err))
+			pl.Status.MarkDeployFailed("CreateDaemonDeployFailed", err.Error())
+			r.recorder.Eventf(pl, corev1.EventTypeWarning, "CreateDaemonDeployFailed", "Failed to create a daemon deployment: %w", err.Error())
+			return fmt.Errorf("failed to create a daemon deployment, %w", err)
+		}
+		log.Infow("Succeeded to create/recreate a daemon deployment", zap.String("deployment", deploy.Name))
+		r.recorder.Eventf(pl, corev1.EventTypeNormal, "CreateDaemonDeploySuccess", "Succeeded to create/recreate daemon deployment %s", deploy.Name)
 	}
 	return nil
 }
@@ -373,9 +436,89 @@ func (r *pipelineReconciler) findExistingVertices(ctx context.Context, pl *dfv1.
 	return result, nil
 }
 
+// Create or update Side Inputs Mapager deployments
+func (r *pipelineReconciler) createOrUpdateSIMDeployments(ctx context.Context, pl *dfv1.Pipeline, isbSvcConfig dfv1.BufferServiceConfig) error {
+	log := logging.FromContext(ctx)
+	isbSvcType, envs := sharedutil.GetIsbSvcEnvVars(isbSvcConfig)
+	envs = append(envs, corev1.EnvVar{Name: dfv1.EnvPipelineName, Value: pl.Name})
+	req := dfv1.GetSideInputDeploymentReq{
+		ISBSvcType: isbSvcType,
+		Image:      r.image,
+		PullPolicy: corev1.PullPolicy(sharedutil.LookupEnvStringOr(dfv1.EnvImagePullPolicy, "")),
+		Env:        envs,
+	}
+
+	newObjs, err := pl.GetSideInputsManagerDeployments(req)
+	if err != nil {
+		pl.Status.MarkDeployFailed("BuildSIMObjsFailed", err.Error())
+		return fmt.Errorf("failed to build Side Inputs Manager Deployments, %w", err)
+	}
+	existingObjs, err := r.findExistingSIMDeploys(ctx, pl)
+	if err != nil {
+		pl.Status.MarkDeployFailed("FindExistingSIMFailed", err.Error())
+		return fmt.Errorf("failed to find existing Side Inputs Manager Deployments, %w", err)
+	}
+	for _, newObj := range newObjs {
+		deployHash := sharedutil.MustHash(newObj.Spec)
+		if newObj.Annotations == nil {
+			newObj.Annotations = make(map[string]string)
+		}
+		newObj.Annotations[dfv1.KeyHash] = deployHash
+		needToCreate := false
+		if oldObj, existing := existingObjs[newObj.Name]; existing {
+			if oldObj.GetAnnotations()[dfv1.KeyHash] != newObj.GetAnnotations()[dfv1.KeyHash] {
+				// Delete and recreate, to avoid updating immutable fields problem.
+				if err := r.client.Delete(ctx, &oldObj); err != nil {
+					pl.Status.MarkDeployFailed("DeleteOldSIMDeploymentFailed", err.Error())
+					return fmt.Errorf("failed to delete old Side Inputs Manager Deployment %q, %w", oldObj.Name, err)
+				}
+				needToCreate = true
+			}
+			delete(existingObjs, oldObj.Name)
+		} else {
+			needToCreate = true
+		}
+		if needToCreate {
+			if err := r.client.Create(ctx, newObj); err != nil {
+				if apierrors.IsAlreadyExists(err) { // probably somebody else already created it
+					continue
+				} else {
+					pl.Status.MarkDeployFailed("CreateSIMDeploymentFailed", err.Error())
+					return fmt.Errorf("failed to create/recreate Side Inputs Manager Deployment %q, %w", newObj.Name, err)
+				}
+			}
+			log.Infow("Succeeded to create/recreate Side Inputs Manager Deployment", zap.String("deployment", newObj.Name))
+			r.recorder.Event(pl, corev1.EventTypeNormal, "CreateSIMDeployment", "Succeeded to create/recreate Side Inputs Manager Deployment")
+		}
+	}
+	for _, v := range existingObjs {
+		if err := r.client.Delete(ctx, &v); err != nil {
+			pl.Status.MarkDeployFailed("DeleteStaleSIMDeploymentFailed", err.Error())
+			return fmt.Errorf("failed to delete stale Side Inputs Manager Deployment %q, %w", v.Name, err)
+		}
+		log.Infow("Deleted stale Side Inputs Manager Deployment successfully", zap.String("deployment", v.Name))
+	}
+	return nil
+}
+
+// Find existing Side Inputs Manager Deployment objects.
+func (r *pipelineReconciler) findExistingSIMDeploys(ctx context.Context, pl *dfv1.Pipeline) (map[string]appv1.Deployment, error) {
+	deployments := &appv1.DeploymentList{}
+	selector, _ := labels.Parse(dfv1.KeyPipelineName + "=" + pl.Name + "," + dfv1.KeyComponent + "=" + dfv1.ComponentSideInputManager)
+	if err := r.client.List(ctx, deployments, &client.ListOptions{Namespace: pl.Namespace, LabelSelector: selector}); err != nil {
+		return nil, fmt.Errorf("failed to list existing Side Inputs Manager deployments: %w", err)
+	}
+	result := make(map[string]appv1.Deployment)
+	for _, d := range deployments.Items {
+		result[d.Name] = d
+	}
+	return result, nil
+}
+
 func (r *pipelineReconciler) cleanUpBuffers(ctx context.Context, pl *dfv1.Pipeline, log *zap.SugaredLogger) error {
 	allBuffers := pl.GetAllBuffers()
-	if len(allBuffers) > 0 {
+	allBuckets := pl.GetAllBuckets()
+	if len(allBuffers) > 0 || len(allBuckets) > 0 {
 		isbSvc := &dfv1.InterStepBufferService{}
 		isbSvcName := dfv1.DefaultISBSvcName
 		if len(pl.Spec.InterStepBufferServiceName) > 0 {
@@ -391,13 +534,11 @@ func (r *pipelineReconciler) cleanUpBuffers(ctx context.Context, pl *dfv1.Pipeli
 		}
 
 		args := []string{}
-		bfs := []string{}
-		for _, b := range allBuffers {
-			bfs = append(bfs, fmt.Sprintf("%s=%s", b.Name, b.Type))
-		}
-		args = append(args, fmt.Sprintf("--buffers=%s", strings.Join(bfs, ",")))
+		args = append(args, fmt.Sprintf("--buffers=%s", strings.Join(allBuffers, ",")))
+		args = append(args, fmt.Sprintf("--buckets=%s", strings.Join(allBuckets, ",")))
+		args = append(args, fmt.Sprintf("--side-inputs-store=%s", pl.GetSideInputsStoreName()))
 
-		batchJob := buildISBBatchJob(pl, r.image, isbSvc.Status.Config, "isbsvc-buffer-delete", args, "cleanup")
+		batchJob := buildISBBatchJob(pl, r.image, isbSvc.Status.Config, "isbsvc-delete", args, "cln")
 		batchJob.OwnerReferences = []metav1.OwnerReference{}
 		if err := r.client.Create(ctx, batchJob); err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("failed to create buffer clean up job, err: %w", err)
@@ -414,6 +555,7 @@ func needsUpdate(old, new *dfv1.Pipeline) bool {
 	if !equality.Semantic.DeepEqual(old.Finalizers, new.Finalizers) {
 		return true
 	}
+
 	return false
 }
 
@@ -428,18 +570,16 @@ func buildVertices(pl *dfv1.Pipeline) map[string]dfv1.Vertex {
 			dfv1.KeyPipelineName: pl.Name,
 			dfv1.KeyVertexName:   v.Name,
 		}
-		fromEdges := copyEdgeLimits(pl, pl.GetFromEdges(v.Name))
-		toEdges := copyEdgeLimits(pl, pl.GetToEdges(v.Name))
+		fromEdges := copyEdges(pl, pl.GetFromEdges(v.Name))
+		toEdges := copyEdges(pl, pl.GetToEdges(v.Name))
 		vCopy := v.DeepCopy()
 		copyVertexLimits(pl, vCopy)
 		replicas := int32(1)
 		if pl.Status.Phase == dfv1.PipelinePhasePaused {
 			replicas = int32(0)
-		} else if v.UDF != nil && v.UDF.GroupBy != nil {
-			// check first edge only since there is only one fromEdge for a vertex
-			if fromEdges[0].Parallelism != nil {
-				replicas = *fromEdges[0].Parallelism
-			}
+		} else if v.IsReduceUDF() {
+			partitions := pl.NumOfPartitions(v.Name)
+			replicas = int32(partitions)
 		} else {
 			x := vCopy.Scale
 			if x.Min != nil && *x.Min > 1 && replicas < *x.Min {
@@ -480,32 +620,50 @@ func buildVertices(pl *dfv1.Pipeline) map[string]dfv1.Vertex {
 }
 
 func copyVertexLimits(pl *dfv1.Pipeline, v *dfv1.AbstractVertex) {
-	plLimits := pl.GetPipelineLimits()
-	if v.Limits == nil {
-		v.Limits = &dfv1.VertexLimits{}
-	}
-	if v.Limits.ReadBatchSize == nil {
-		v.Limits.ReadBatchSize = plLimits.ReadBatchSize
-	}
-	if v.Limits.ReadTimeout == nil {
-		v.Limits.ReadTimeout = plLimits.ReadTimeout
-	}
+	mergedLimits := mergeLimits(pl.GetPipelineLimits(), v.Limits)
+	v.Limits = &mergedLimits
 }
 
-func copyEdgeLimits(pl *dfv1.Pipeline, edges []dfv1.Edge) []dfv1.Edge {
-	plLimits := pl.GetPipelineLimits()
-	result := []dfv1.Edge{}
+func mergeLimits(plLimits dfv1.PipelineLimits, vLimits *dfv1.VertexLimits) dfv1.VertexLimits {
+	result := dfv1.VertexLimits{}
+	if vLimits != nil {
+		result.BufferMaxLength = vLimits.BufferMaxLength
+		result.BufferUsageLimit = vLimits.BufferUsageLimit
+		result.ReadBatchSize = vLimits.ReadBatchSize
+		result.ReadTimeout = vLimits.ReadTimeout
+	}
+	if result.ReadBatchSize == nil {
+		result.ReadBatchSize = plLimits.ReadBatchSize
+	}
+	if result.ReadTimeout == nil {
+		result.ReadTimeout = plLimits.ReadTimeout
+	}
+	if result.BufferMaxLength == nil {
+		result.BufferMaxLength = plLimits.BufferMaxLength
+	}
+	if result.BufferUsageLimit == nil {
+		result.BufferUsageLimit = plLimits.BufferUsageLimit
+	}
+	return result
+}
+
+func copyEdges(pl *dfv1.Pipeline, edges []dfv1.Edge) []dfv1.CombinedEdge {
+	result := []dfv1.CombinedEdge{}
 	for _, e := range edges {
-		if e.Limits == nil {
-			e.Limits = &dfv1.EdgeLimits{}
+		vFrom := pl.GetVertex(e.From)
+		vTo := pl.GetVertex(e.To)
+		fromVertexLimits := mergeLimits(pl.GetPipelineLimits(), vFrom.Limits)
+		toVertexLimits := mergeLimits(pl.GetPipelineLimits(), vTo.Limits)
+		combinedEdge := dfv1.CombinedEdge{
+			Edge:                     e,
+			FromVertexType:           vFrom.GetVertexType(),
+			FromVertexPartitionCount: pointer.Int32(int32(vFrom.GetPartitionCount())),
+			FromVertexLimits:         &fromVertexLimits,
+			ToVertexLimits:           &toVertexLimits,
+			ToVertexType:             vTo.GetVertexType(),
+			ToVertexPartitionCount:   pointer.Int32(int32(vTo.GetPartitionCount())),
 		}
-		if e.Limits.BufferMaxLength == nil {
-			e.Limits.BufferMaxLength = plLimits.BufferMaxLength
-		}
-		if e.Limits.BufferUsageLimit == nil {
-			e.Limits.BufferUsageLimit = plLimits.BufferUsageLimit
-		}
-		result = append(result, e)
+		result = append(result, combinedEdge)
 	}
 	return result
 }
@@ -561,8 +719,9 @@ func buildISBBatchJob(pl *dfv1.Pipeline, image string, isbSvcConfig dfv1.BufferS
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: pl.Namespace,
-			Name:      fmt.Sprintf("%s-buffer-%s-%v", pl.Name, jobType, randomStr),
-			Labels:    l,
+			// The name won't be over length limit, because we have validated "{pipeline}-{vertex}-headless" is no longer than 63.
+			Name:   fmt.Sprintf("%s-%s-%v", pl.Name, jobType, randomStr),
+			Labels: l,
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(pl.GetObjectMeta(), dfv1.PipelineGroupVersionKind),
 			},
@@ -588,6 +747,19 @@ func (r *pipelineReconciler) updateDesiredState(ctx context.Context, pl *dfv1.Pi
 }
 
 func (r *pipelineReconciler) resumePipeline(ctx context.Context, pl *dfv1.Pipeline) (bool, error) {
+
+	// reset pause timestamp
+	if pl.GetAnnotations()[dfv1.KeyPauseTimestamp] != "" {
+		err := r.client.Patch(ctx, pl, client.RawPatch(types.JSONPatchType, []byte(dfv1.RemovePauseTimestampPatch)))
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return false, nil // skip pipeline if it can't be found
+			} else {
+				return true, err // otherwise requeue resume
+			}
+		}
+	}
+
 	_, err := r.scaleUpAllVertices(ctx, pl)
 	if err != nil {
 		return false, err
@@ -597,6 +769,20 @@ func (r *pipelineReconciler) resumePipeline(ctx context.Context, pl *dfv1.Pipeli
 }
 
 func (r *pipelineReconciler) pausePipeline(ctx context.Context, pl *dfv1.Pipeline) (bool, error) {
+
+	// check that annotations / pause timestamp annotation exist
+	if pl.GetAnnotations() == nil || pl.GetAnnotations()[dfv1.KeyPauseTimestamp] == "" {
+		pl.SetAnnotations(map[string]string{dfv1.KeyPauseTimestamp: time.Now().Format(time.RFC3339)})
+		body, err := json.Marshal(pl)
+		if err != nil {
+			return false, err
+		}
+		err = r.client.Patch(ctx, pl, client.RawPatch(types.MergePatchType, body))
+		if err != nil && !apierrors.IsNotFound(err) {
+			return true, err
+		}
+	}
+
 	pl.Status.MarkPhasePausing()
 	updated, err := r.scaleDownSourceVertices(ctx, pl)
 	if err != nil || updated {
@@ -616,7 +802,14 @@ func (r *pipelineReconciler) pausePipeline(ctx context.Context, pl *dfv1.Pipelin
 	if err != nil {
 		return true, err
 	}
-	if drainCompleted {
+
+	pauseTimestamp, err := time.Parse(time.RFC3339, pl.GetAnnotations()[dfv1.KeyPauseTimestamp])
+	if err != nil {
+		return false, err
+	}
+
+	// if drain is completed or we have exceed pause deadline, mark pl as paused and scale down
+	if time.Now().After(pauseTimestamp.Add(time.Duration(pl.Spec.Lifecycle.GetPauseGracePeriodSeconds())*time.Second)) || drainCompleted {
 		_, err := r.scaleDownAllVertices(ctx, pl)
 		if err != nil {
 			return true, err
@@ -648,7 +841,14 @@ func (r *pipelineReconciler) scaleVertex(ctx context.Context, pl *dfv1.Pipeline,
 	isVertexPatched := false
 	for _, vertex := range existingVertices {
 		if origin := *vertex.Spec.Replicas; origin != replicas && filter(vertex) {
-			vertex.Spec.Replicas = pointer.Int32(replicas)
+			scaleTo := replicas
+			// if vtx does not support autoscaling and min is set, scale up to min
+			if replicas == 1 {
+				if !vertex.Scalable() && vertex.Spec.Scale.Min != nil && *vertex.Spec.Scale.Min > 1 {
+					scaleTo = *vertex.Spec.Scale.Min
+				}
+			}
+			vertex.Spec.Replicas = pointer.Int32(scaleTo)
 			body, err := json.Marshal(vertex)
 			if err != nil {
 				return false, err
@@ -657,7 +857,8 @@ func (r *pipelineReconciler) scaleVertex(ctx context.Context, pl *dfv1.Pipeline,
 			if err != nil && !apierrors.IsNotFound(err) {
 				return false, err
 			}
-			log.Infow("Scaled vertex", zap.Int32("from", origin), zap.Int32("to", replicas), zap.String("vertex", vertex.Name))
+			log.Infow("Scaled vertex", zap.Int32("from", origin), zap.Int32("to", scaleTo), zap.String("vertex", vertex.Name))
+			r.recorder.Eventf(pl, corev1.EventTypeNormal, "ScalingVertex", "Scaled vertex %s from %d to %d replicas", vertex.Name, origin, scaleTo)
 			isVertexPatched = true
 		}
 	}

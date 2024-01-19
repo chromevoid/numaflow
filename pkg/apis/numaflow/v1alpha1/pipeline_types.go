@@ -28,7 +28,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/pointer"
 )
 
 // +kubebuilder:validation:Enum="";Running;Succeeded;Failed;Pausing;Paused;Deleting
@@ -88,30 +87,29 @@ func (p Pipeline) ListAllEdges() []Edge {
 	edges := []Edge{}
 	for _, e := range p.Spec.Edges {
 		edgeCopy := e.DeepCopy()
-		toVertex := p.GetVertex(e.To)
-		if toVertex == nil {
-			continue
-		}
-		if toVertex.UDF == nil || toVertex.UDF.GroupBy == nil {
-			// Clean up parallelism if downstream vertex is not a reduce UDF.
-			// This has been validated by the controller, harmless to do it here.
-			edgeCopy.Parallelism = nil
-		} else if edgeCopy.Parallelism == nil || *edgeCopy.Parallelism < 1 || !toVertex.UDF.GroupBy.Keyed {
-			// Set parallelism = 1 if it's not set, or it's a non-keyed reduce.
-			// Already validated by the controller to make sure parallelism is not > 1 if it's not keyed, harmless to check it again.
-			edgeCopy.Parallelism = pointer.Int32(1)
-		}
 		edges = append(edges, *edgeCopy)
 	}
 	return edges
 }
 
-// FindEdgeWithBuffer is used to locate the edge of the buffer.
-func (p Pipeline) FindEdgeWithBuffer(buffer string) *Edge {
-	for _, e := range p.ListAllEdges() {
-		for _, b := range GenerateEdgeBufferNames(p.Namespace, p.Name, e) {
+// NumOfPartitions returns the number of partitions for a vertex.
+func (p Pipeline) NumOfPartitions(vertex string) int {
+	v := p.GetVertex(vertex)
+	if v == nil {
+		return 0
+	}
+	partitions := 1
+	if v.Partitions != nil {
+		partitions = v.GetPartitionCount()
+	}
+	return partitions
+}
+
+func (p Pipeline) FindVertexWithBuffer(buffer string) *AbstractVertex {
+	for _, v := range p.Spec.Vertices {
+		for _, b := range v.OwnedBufferNames(p.Namespace, p.Name) {
 			if buffer == b {
-				return &e
+				return &v
 			}
 		}
 	}
@@ -138,18 +136,24 @@ func (p Pipeline) GetFromEdges(vertexName string) []Edge {
 	return edges
 }
 
-func (p Pipeline) GetAllBuffers() []Buffer {
-	r := []Buffer{}
+func (p Pipeline) GetAllBuffers() []string {
+	r := []string{}
+	for _, v := range p.Spec.Vertices {
+		r = append(r, v.OwnedBufferNames(p.Namespace, p.Name)...)
+	}
+	return r
+}
+
+func (p Pipeline) GetAllBuckets() []string {
+	r := []string{}
 	for _, e := range p.ListAllEdges() {
-		for _, b := range GenerateEdgeBufferNames(p.Namespace, p.Name, e) {
-			r = append(r, Buffer{b, EdgeBuffer})
-		}
+		r = append(r, GenerateEdgeBucketName(p.Namespace, p.Name, e.From, e.To))
 	}
 	for _, v := range p.Spec.Vertices {
 		if v.Source != nil {
-			r = append(r, Buffer{GenerateSourceBufferName(p.Namespace, p.Name, v.Name), SourceBuffer})
+			r = append(r, GenerateSourceBucketName(p.Namespace, p.Name, v.Name))
 		} else if v.Sink != nil {
-			r = append(r, Buffer{GenerateSinkBufferName(p.Namespace, p.Name, v.Name), SinkBuffer})
+			r = append(r, GenerateSinkBucketName(p.Namespace, p.Name, v.Name))
 		}
 	}
 	return r
@@ -157,18 +161,28 @@ func (p Pipeline) GetAllBuffers() []Buffer {
 
 // GetDownstreamEdges returns all the downstream edges of a vertex
 func (p Pipeline) GetDownstreamEdges(vertexName string) []Edge {
-	var f func(vertexName string, edges *[]Edge)
-	f = func(vertexName string, edges *[]Edge) {
+	var f func(vertexName string, edges *[]Edge, visited map[string]bool)
+	f = func(vertexName string, edges *[]Edge, visited map[string]bool) {
+		if visited[vertexName] {
+			return
+		}
+		visited[vertexName] = true
 		for _, b := range p.ListAllEdges() {
 			if b.From == vertexName {
 				*edges = append(*edges, b)
-				f(b.To, edges)
+				f(b.To, edges, visited)
 			}
 		}
 	}
 	result := []Edge{}
-	f(vertexName, &result)
+	visited := make(map[string]bool)
+	f(vertexName, &result, visited)
 	return result
+}
+
+// HasSideInputs returns if the pipeline has side inputs.
+func (p Pipeline) HasSideInputs() bool {
+	return len(p.Spec.SideInputs) > 0
 }
 
 func (p Pipeline) GetDaemonServiceName() string {
@@ -178,8 +192,38 @@ func (p Pipeline) GetDaemonServiceName() string {
 func (p Pipeline) GetDaemonDeploymentName() string {
 	return fmt.Sprintf("%s-daemon", p.Name)
 }
+
 func (p Pipeline) GetDaemonServiceURL() string {
-	return fmt.Sprintf("%s.%s.svc.cluster.local:%d", p.GetDaemonServiceName(), p.Namespace, DaemonServicePort)
+	return fmt.Sprintf("%s.%s.svc:%d", p.GetDaemonServiceName(), p.Namespace, DaemonServicePort)
+}
+
+func (p Pipeline) GetSideInputsManagerDeploymentName(sideInputName string) string {
+	return fmt.Sprintf("%s-si-%s", p.Name, sideInputName)
+}
+
+func (p Pipeline) GetSideInputsStoreName() string {
+	return fmt.Sprintf("%s-%s", p.Namespace, p.Name)
+}
+
+func (p Pipeline) GetSideInputsManagerDeployments(req GetSideInputDeploymentReq) ([]*appv1.Deployment, error) {
+	commonEnvVars := []corev1.EnvVar{
+		{Name: EnvNamespace, ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
+		{Name: EnvPod, ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
+	}
+	deployments := []*appv1.Deployment{}
+	for _, sideInput := range p.Spec.SideInputs {
+		deployment, err := sideInput.getManagerDeploymentObj(p, req)
+		if err != nil {
+			return nil, err
+		}
+		for i := 0; i < len(deployment.Spec.Template.Spec.Containers); i++ {
+			deployment.Spec.Template.Spec.Containers[i].Env = append(deployment.Spec.Template.Spec.Containers[i].Env, commonEnvVars...)
+		}
+		deployment.Spec.Template.Spec.InitContainers[0].Env = append(deployment.Spec.Template.Spec.InitContainers[0].Env, corev1.EnvVar{Name: EnvGoDebug, Value: os.Getenv(EnvGoDebug)})
+		deployment.Spec.Template.Spec.Containers[0].Env = append(deployment.Spec.Template.Spec.Containers[0].Env, corev1.EnvVar{Name: EnvGoDebug, Value: os.Getenv(EnvGoDebug)})
+		deployments = append(deployments, deployment)
+	}
+	return deployments, nil
 }
 
 func (p Pipeline) GetDaemonDeploymentObj(req GetDaemonDeploymentReq) (*appv1.Deployment, error) {
@@ -200,7 +244,7 @@ func (p Pipeline) GetDaemonDeploymentObj(req GetDaemonDeploymentReq) (*appv1.Dep
 		{Name: EnvNamespace, ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
 		{Name: EnvPod, ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
 		{Name: EnvPipelineObject, Value: encodedPipeline},
-		{Name: "GODEBUG", Value: os.Getenv("GODEBUG")},
+		{Name: EnvGoDebug, Value: os.Getenv(EnvGoDebug)},
 	}
 	envVars = append(envVars, req.Env...)
 	c := corev1.Container{
@@ -242,6 +286,7 @@ func (p Pipeline) GetDaemonDeploymentObj(req GetDaemonDeploymentReq) (*appv1.Dep
 		KeyPartOf:       Project,
 		KeyManagedBy:    ControllerPipeline,
 		KeyComponent:    ComponentDaemon,
+		KeyAppName:      p.GetDaemonDeploymentName(),
 		KeyPipelineName: p.Name,
 	}
 	spec := appv1.DeploymentSpec{
@@ -282,7 +327,7 @@ func (p Pipeline) GetDaemonDeploymentObj(req GetDaemonDeploymentReq) (*appv1.Dep
 
 func (p Pipeline) getDaemonPodInitContainer(req GetDaemonDeploymentReq) corev1.Container {
 	envVars := []corev1.EnvVar{
-		{Name: "GODEBUG", Value: os.Getenv("GODEBUG")},
+		{Name: EnvGoDebug, Value: os.Getenv(EnvGoDebug)},
 	}
 	envVars = append(envVars, req.Env...)
 	c := corev1.Container{
@@ -291,13 +336,10 @@ func (p Pipeline) getDaemonPodInitContainer(req GetDaemonDeploymentReq) corev1.C
 		Image:           req.Image,
 		ImagePullPolicy: req.PullPolicy,
 		Resources:       standardResources,
-		Args:            []string{"isbsvc-buffer-validate", "--isbsvc-type=" + string(req.ISBSvcType)},
+		Args:            []string{"isbsvc-validate", "--isbsvc-type=" + string(req.ISBSvcType)},
 	}
-	bfs := []string{}
-	for _, b := range p.GetAllBuffers() {
-		bfs = append(bfs, fmt.Sprintf("%s=%s", b.Name, b.Type))
-	}
-	c.Args = append(c.Args, "--buffers="+strings.Join(bfs, ","))
+	c.Args = append(c.Args, "--buffers="+strings.Join(p.GetAllBuffers(), ","))
+	c.Args = append(c.Args, "--buckets="+strings.Join(p.GetAllBuckets(), ","))
 	if p.Spec.Templates != nil && p.Spec.Templates.DaemonTemplate != nil && p.Spec.Templates.DaemonTemplate.InitContainerTemplate != nil {
 		p.Spec.Templates.DaemonTemplate.InitContainerTemplate.ApplyToContainer(&c)
 	}
@@ -367,6 +409,10 @@ type Lifecycle struct {
 	// +kubebuilder:default=Running
 	// +optional
 	DesiredPhase PipelinePhase `json:"desiredPhase,omitempty" protobuf:"bytes,2,opt,name=desiredPhase"`
+	// PauseGracePeriodSeconds used to pause pipeline gracefully
+	// +kubebuilder:default=30
+	// +optional
+	PauseGracePeriodSeconds *int32 `json:"pauseGracePeriodSeconds,omitempty" protobuf:"varint,3,opt,name=pauseGracePeriodSeconds"`
 }
 
 // GetDeleteGracePeriodSeconds returns the value DeleteGracePeriodSeconds.
@@ -384,6 +430,14 @@ func (lc Lifecycle) GetDesiredPhase() PipelinePhase {
 	return PipelinePhaseRunning
 }
 
+// return PauseGracePeriodSeconds if set
+func (lc Lifecycle) GetPauseGracePeriodSeconds() int32 {
+	if lc.PauseGracePeriodSeconds != nil {
+		return *lc.PauseGracePeriodSeconds
+	}
+	return 30
+}
+
 type PipelineSpec struct {
 	// +optional
 	InterStepBufferServiceName string `json:"interStepBufferServiceName,omitempty" protobuf:"bytes,1,opt,name=interStepBufferServiceName"`
@@ -393,7 +447,7 @@ type PipelineSpec struct {
 	// Edges define the relationships between vertices
 	Edges []Edge `json:"edges,omitempty" protobuf:"bytes,3,rep,name=edges"`
 	// Lifecycle define the Lifecycle properties
-	// +kubebuilder:default={"deleteGracePeriodSeconds": 30, "desiredPhase": Running}
+	// +kubebuilder:default={"deleteGracePeriodSeconds": 30, "desiredPhase": Running, "pauseGracePeriodSeconds": 30}
 	// +optional
 	Lifecycle Lifecycle `json:"lifecycle,omitempty" protobuf:"bytes,4,opt,name=lifecycle"`
 	// Limits define the limitations such as buffer read batch size for all the vertices of a pipeline, they could be overridden by each vertex's settings
@@ -404,9 +458,41 @@ type PipelineSpec struct {
 	// +kubebuilder:default={"disabled": false}
 	// +optional
 	Watermark Watermark `json:"watermark,omitempty" protobuf:"bytes,6,opt,name=watermark"`
-	// Templates is used to customize additional kubernetes resources required for the Pipeline
+	// Templates are used to customize additional kubernetes resources required for the Pipeline
 	// +optional
 	Templates *Templates `json:"templates,omitempty" protobuf:"bytes,7,opt,name=templates"`
+	// SideInputs defines the Side Inputs of a pipeline.
+	// +optional
+	SideInputs []SideInput `json:"sideInputs,omitempty" protobuf:"bytes,8,rep,name=sideInputs"`
+}
+
+func (pipeline PipelineSpec) GetMatchingVertices(f func(AbstractVertex) bool) map[string]*AbstractVertex {
+	mappedVertices := make(map[string]*AbstractVertex)
+	for i := range pipeline.Vertices {
+		v := &pipeline.Vertices[i]
+		if f(*v) {
+			mappedVertices[v.Name] = v
+		}
+	}
+	return mappedVertices
+}
+
+func (pipeline PipelineSpec) GetVerticesByName() map[string]*AbstractVertex {
+	return pipeline.GetMatchingVertices(func(v AbstractVertex) bool {
+		return true
+	})
+}
+
+func (pipeline PipelineSpec) GetSourcesByName() map[string]*AbstractVertex {
+	return pipeline.GetMatchingVertices(func(v AbstractVertex) bool {
+		return v.IsASource()
+	})
+}
+
+func (pipeline PipelineSpec) GetSinksByName() map[string]*AbstractVertex {
+	return pipeline.GetMatchingVertices(func(v AbstractVertex) bool {
+		return v.IsASink()
+	})
 }
 
 type Watermark struct {
@@ -418,9 +504,12 @@ type Watermark struct {
 	// +kubebuilder:default="0s"
 	// +optional
 	MaxDelay *metav1.Duration `json:"maxDelay,omitempty" protobuf:"bytes,2,opt,name=maxDelay"`
+	// IdleSource defines the idle watermark properties, it could be configured in case source is idling.
+	// +optional
+	IdleSource *IdleSource `json:"idleSource,omitempty" protobuf:"bytes,3,opt,name=idleSource"`
 }
 
-// GetMaxDelay returns the configured max delay with a default value
+// GetMaxDelay returns the configured max delay with a default value.
 func (wm Watermark) GetMaxDelay() time.Duration {
 	if wm.MaxDelay != nil {
 		return wm.MaxDelay.Duration
@@ -428,21 +517,64 @@ func (wm Watermark) GetMaxDelay() time.Duration {
 	return time.Duration(0)
 }
 
+type IdleSource struct {
+	// Threshold is the duration after which a source is marked as Idle due to lack of data.
+	// Ex: If watermark found to be idle after the Threshold duration then the watermark is progressed by `IncrementBy`.
+	Threshold *metav1.Duration `json:"threshold,omitempty" protobuf:"bytes,1,opt,name=threshold"`
+	// StepInterval is the duration between the subsequent increment of the watermark as long the source remains Idle.
+	// The default value is 0s which means that once we detect idle source, we will be incrementing the watermark by
+	// `IncrementBy` for time we detect that we source is empty (in other words, this will be a very frequent update).
+	// +kubebuilder:default="0s"
+	// +optional
+	StepInterval *metav1.Duration `json:"stepInterval,omitempty" protobuf:"bytes,2,opt,name=stepInterval"`
+	// IncrementBy is the duration to be added to the current watermark to progress the watermark when source is idling.
+	IncrementBy *metav1.Duration `json:"incrementBy,omitempty" protobuf:"bytes,3,opt,name=incrementBy"`
+}
+
+func (is IdleSource) GetThreshold() time.Duration {
+	if is.Threshold != nil {
+		return is.Threshold.Duration
+	}
+
+	return time.Duration(0)
+}
+
+func (is IdleSource) GetIncrementBy() time.Duration {
+	if is.IncrementBy != nil {
+		return is.IncrementBy.Duration
+	}
+
+	return time.Duration(0)
+}
+
+func (is IdleSource) GetStepInterval() time.Duration {
+	if is.StepInterval != nil {
+		return is.StepInterval.Duration
+	}
+	return time.Duration(0)
+}
+
 type Templates struct {
-	// DaemonTemplate is used to customize the Daemon Deployment
+	// DaemonTemplate is used to customize the Daemon Deployment.
 	// +optional
 	DaemonTemplate *DaemonTemplate `json:"daemon,omitempty" protobuf:"bytes,1,opt,name=daemon"`
-	// JobTemplate is used to customize Jobs
+	// JobTemplate is used to customize Jobs.
 	// +optional
 	JobTemplate *JobTemplate `json:"job,omitempty" protobuf:"bytes,2,opt,name=job"`
+	// SideInputsManagerTemplate is used to customize the Side Inputs Manager.
+	// +optional
+	SideInputsManagerTemplate *SideInputsManagerTemplate `json:"sideInputsManager,omitempty" protobuf:"bytes,3,opt,name=sideInputsManager"`
+	// VertexTemplate is used to customize the vertices of the pipeline.
+	// +optional
+	VertexTemplate *VertexTemplate `json:"vertex,omitempty" protobuf:"bytes,4,opt,name=vertex"`
 }
 
 type PipelineLimits struct {
-	// Read batch size for all the vertices in the pipeline, can be overridden by the vertex's limit settings
+	// Read batch size for all the vertices in the pipeline, can be overridden by the vertex's limit settings.
 	// +kubebuilder:default=500
 	// +optional
 	ReadBatchSize *uint64 `json:"readBatchSize,omitempty" protobuf:"varint,1,opt,name=readBatchSize"`
-	// BufferMaxLength is used to define the max length of a buffer
+	// BufferMaxLength is used to define the max length of a buffer.
 	// Only applies to UDF and Source vertices as only they do buffer write.
 	// It can be overridden by the settings in vertex limits.
 	// +kubebuilder:default=30000

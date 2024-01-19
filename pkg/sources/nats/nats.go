@@ -26,57 +26,55 @@ import (
 	"go.uber.org/zap"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
-	"github.com/numaproj/numaflow/pkg/forward"
-	"github.com/numaproj/numaflow/pkg/forward/applier"
+	"github.com/numaproj/numaflow/pkg/forwarder"
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/metrics"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
 	sharedutil "github.com/numaproj/numaflow/pkg/shared/util"
+	sourceforward "github.com/numaproj/numaflow/pkg/sources/forward"
+	"github.com/numaproj/numaflow/pkg/sources/forward/applier"
+	"github.com/numaproj/numaflow/pkg/sources/sourcer"
 	"github.com/numaproj/numaflow/pkg/watermark/fetch"
-	"github.com/numaproj/numaflow/pkg/watermark/processor"
 	"github.com/numaproj/numaflow/pkg/watermark/publish"
 	"github.com/numaproj/numaflow/pkg/watermark/store"
 	"github.com/numaproj/numaflow/pkg/watermark/wmb"
 )
 
 type natsSource struct {
-	name         string
-	pipelineName string
-	logger       *zap.SugaredLogger
-
-	natsConn *natslib.Conn
-	sub      *natslib.Subscription
-
-	bufferSize  int
-	messages    chan *isb.ReadMessage
-	readTimeout time.Duration
-
-	cancelfn  context.CancelFunc
-	forwarder *forward.InterStepDataForward
-	// source watermark publisher
-	sourcePublishWM publish.Publisher
+	vertexName    string
+	pipelineName  string
+	vertexReplica int32
+	logger        *zap.SugaredLogger
+	natsConn      *natslib.Conn
+	sub           *natslib.Subscription
+	bufferSize    int
+	messages      chan *isb.ReadMessage
+	readTimeout   time.Duration
+	cancelFn      context.CancelFunc
+	forwarder     *sourceforward.DataForward
 }
 
 func New(
 	vertexInstance *dfv1.VertexInstance,
-	writers []isb.BufferWriter,
-	fsd forward.ToWhichStepDecider,
-	mapApplier applier.MapApplier,
-	fetchWM fetch.Fetcher,
-	publishWM map[string]publish.Publisher,
-	publishWMStores store.WatermarkStorer,
-	opts ...Option) (*natsSource, error) {
+	writers map[string][]isb.BufferWriter,
+	fsd forwarder.ToWhichStepDecider,
+	transformerApplier applier.SourceTransformApplier,
+	fetchWM fetch.SourceFetcher,
+	toVertexPublisherStores map[string]store.WatermarkStore,
+	publishWMStores store.WatermarkStore,
+	idleManager wmb.IdleManager,
+	opts ...Option) (sourcer.Sourcer, error) {
 
 	n := &natsSource{
-		name:         vertexInstance.Vertex.Spec.Name,
-		pipelineName: vertexInstance.Vertex.Spec.PipelineName,
-		bufferSize:   1000,            // default size
-		readTimeout:  1 * time.Second, // default timeout
+		vertexName:    vertexInstance.Vertex.Spec.Name,
+		pipelineName:  vertexInstance.Vertex.Spec.PipelineName,
+		vertexReplica: vertexInstance.Replica,
+		bufferSize:    1000,            // default size
+		readTimeout:   1 * time.Second, // default timeout
 	}
 	for _, o := range opts {
-		operr := o(n)
-		if operr != nil {
-			return nil, operr
+		if err := o(n); err != nil {
+			return nil, err
 		}
 	}
 	if n.logger == nil {
@@ -84,34 +82,33 @@ func New(
 	}
 	n.messages = make(chan *isb.ReadMessage, n.bufferSize)
 
-	destinations := make(map[string]isb.BufferWriter, len(writers))
-	for _, w := range writers {
-		destinations[w.GetName()] = w
-	}
-	forwardOpts := []forward.Option{forward.WithVertexType(dfv1.VertexTypeSource), forward.WithLogger(n.logger), forward.WithSourceWatermarkPublisher(n)}
+	forwardOpts := []sourceforward.Option{sourceforward.WithLogger(n.logger)}
 	if x := vertexInstance.Vertex.Spec.Limits; x != nil {
 		if x.ReadBatchSize != nil {
-			forwardOpts = append(forwardOpts, forward.WithReadBatchSize(int64(*x.ReadBatchSize)))
+			forwardOpts = append(forwardOpts, sourceforward.WithReadBatchSize(int64(*x.ReadBatchSize)))
 		}
 	}
-	forwarder, err := forward.NewInterStepDataForward(vertexInstance.Vertex, n, destinations, fsd, mapApplier, fetchWM, publishWM, forwardOpts...)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	n.cancelFn = cancel
+
+	// create a source watermark publisher
+	sourceWmPublisher := publish.NewSourcePublish(ctx, n.pipelineName, n.vertexName,
+		publishWMStores, publish.WithDelay(vertexInstance.Vertex.Spec.Watermark.GetMaxDelay()), publish.WithDefaultPartitionIdx(vertexInstance.Replica))
+
+	sourceForwarder, err := sourceforward.NewDataForward(vertexInstance, n, writers, fsd, transformerApplier, fetchWM, sourceWmPublisher, toVertexPublisherStores, idleManager, forwardOpts...)
 	if err != nil {
-		n.logger.Errorw("Error instantiating the forwarder", zap.Error(err))
+		n.logger.Errorw("Error instantiating the sourceForwarder", zap.Error(err))
 		return nil, err
 	}
-	n.forwarder = forwarder
-	ctx, cancel := context.WithCancel(context.Background())
-	n.cancelfn = cancel
-	entityName := fmt.Sprintf("%s-%d", vertexInstance.Vertex.Name, vertexInstance.Replica)
-	processorEntity := processor.NewProcessorEntity(entityName)
-	n.sourcePublishWM = publish.NewPublish(ctx, processorEntity, publishWMStores, publish.IsSource(), publish.WithDelay(vertexInstance.Vertex.Spec.Watermark.GetMaxDelay()))
+	n.forwarder = sourceForwarder
 
 	source := vertexInstance.Vertex.Spec.Source.Nats
 	opt := []natslib.Option{
 		natslib.MaxReconnects(-1),
 		natslib.ReconnectWait(3 * time.Second),
-		natslib.DisconnectHandler(func(c *natslib.Conn) {
-			n.logger.Info("Nats disconnected")
+		natslib.DisconnectErrHandler(func(c *natslib.Conn, err error) {
+			n.logger.Errorw("Nats disconnected", zap.Error(err))
 		}),
 		natslib.ReconnectHandler(func(c *natslib.Conn) {
 			n.logger.Info("Nats reconnected")
@@ -163,20 +160,20 @@ func New(
 		n.natsConn = conn
 	}
 	if sub, err := n.natsConn.QueueSubscribe(source.Subject, source.Queue, func(msg *natslib.Msg) {
-		id := uuid.New().String()
+		readOffset := isb.NewSimpleStringPartitionOffset(uuid.New().String(), vertexInstance.Replica)
 		m := &isb.ReadMessage{
 			Message: isb.Message{
 				Header: isb.Header{
 					// TODO: Be able to specify event time.
 					MessageInfo: isb.MessageInfo{EventTime: time.Now()},
-					ID:          id,
+					ID:          readOffset.String(),
 				},
 				Body: isb.Body{
 					Payload: msg.Data,
 				},
 			},
 			// TODO: Be able to specify an ID for dedup?
-			ReadOffset: isb.SimpleStringOffset(func() string { return id }),
+			ReadOffset: readOffset,
 		}
 		n.messages <- m
 	}); err != nil {
@@ -215,7 +212,12 @@ func WithReadTimeout(t time.Duration) Option {
 }
 
 func (ns *natsSource) GetName() string {
-	return ns.name
+	return ns.vertexName
+}
+
+// Partitions returns the partitions associated with this source.
+func (ns *natsSource) Partitions(context.Context) []int32 {
+	return []int32{ns.vertexReplica}
 }
 
 func (ns *natsSource) Read(_ context.Context, count int64) ([]*isb.ReadMessage, error) {
@@ -225,7 +227,7 @@ loop:
 	for i := int64(0); i < count; i++ {
 		select {
 		case m := <-ns.messages:
-			natsSourceReadCount.With(map[string]string{metrics.LabelVertex: ns.name, metrics.LabelPipeline: ns.pipelineName}).Inc()
+			natsSourceReadCount.With(map[string]string{metrics.LabelVertex: ns.vertexName, metrics.LabelPipeline: ns.pipelineName}).Inc()
 			msgs = append(msgs, m)
 		case <-timeout:
 			ns.logger.Debugw("Timed out waiting for messages to read.", zap.Duration("waited", ns.readTimeout), zap.Int("read", len(msgs)))
@@ -236,30 +238,17 @@ loop:
 	return msgs, nil
 }
 
-func (ns *natsSource) PublishSourceWatermarks(msgs []*isb.ReadMessage) {
-	var oldest time.Time
-	for _, m := range msgs {
-		if oldest.IsZero() || m.EventTime.Before(oldest) {
-			oldest = m.EventTime
-		}
-	}
-	if len(msgs) > 0 && !oldest.IsZero() {
-		ns.sourcePublishWM.PublishWatermark(wmb.Watermark(oldest), nil) // Source publisher does not care about the offset
-	}
+func (ns *natsSource) Pending(_ context.Context) (int64, error) {
+	return isb.PendingNotAvailable, nil
 }
 
 func (ns *natsSource) Ack(_ context.Context, offsets []isb.Offset) []error {
 	return make([]error, len(offsets))
 }
 
-func (ns *natsSource) NoAck(_ context.Context, _ []isb.Offset) {}
-
 func (ns *natsSource) Close() error {
 	ns.logger.Info("Shutting down nats source server...")
-	ns.cancelfn()
-	if err := ns.sourcePublishWM.Close(); err != nil {
-		ns.logger.Errorw("Failed to close source vertex watermark publisher", zap.Error(err))
-	}
+	ns.cancelFn()
 	if err := ns.sub.Unsubscribe(); err != nil {
 		ns.logger.Errorw("Failed to unsubscribe nats subscription", zap.Error(err))
 	}

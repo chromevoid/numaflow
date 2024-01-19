@@ -21,17 +21,19 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+
+	"github.com/numaproj/numaflow/pkg/isb"
 )
 
 // RedisStreamsRead is the read queue implementation powered by RedisClient.
 type RedisStreamsRead struct {
-	Name     string
-	Stream   string
-	Group    string
-	Consumer string
+	Name         string
+	Stream       string
+	Group        string
+	Consumer     string
+	PartitionIdx int32
 
 	*RedisClient
 	Options
@@ -52,8 +54,14 @@ type Metrics struct {
 type metricsIncrementFunc func()
 type metricsAddFunc func(int)
 
+// GetName returns the name of the partitioned buffer.
 func (br *RedisStreamsRead) GetName() string {
 	return br.Name
+}
+
+// GetPartitionIdx returns the partition number.
+func (br *RedisStreamsRead) GetPartitionIdx() int32 {
+	return br.PartitionIdx
 }
 
 // GetStreamName returns the stream name.
@@ -132,10 +140,12 @@ func (br *RedisStreamsRead) Ack(_ context.Context, offsets []isb.Offset) []error
 	dedupOffsets := make(map[string]struct{}) // essentially a Set
 	strOffsets := []string{}
 	for _, o := range offsets {
-		_, found := dedupOffsets[o.String()]
+		// for redis, we don't consider partition id to ack
+		ofs := o.String()
+		_, found := dedupOffsets[ofs]
 		if !found {
-			dedupOffsets[o.String()] = struct{}{}
-			strOffsets = append(strOffsets, o.String())
+			dedupOffsets[ofs] = struct{}{}
+			strOffsets = append(strOffsets, ofs)
 		}
 	}
 	if err := br.Client.XAck(RedisContext, br.Stream, br.Group, strOffsets...).Err(); err != nil {

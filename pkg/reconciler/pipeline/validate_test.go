@@ -87,7 +87,7 @@ var (
 							Window: dfv1.Window{
 								Fixed: &dfv1.FixedWindow{
 									Length: &metav1.Duration{
-										Duration: time.Duration(60 * time.Second),
+										Duration: 60 * time.Second,
 									},
 								},
 							},
@@ -102,7 +102,8 @@ var (
 					},
 				},
 				{
-					Name: "p2",
+					Name:       "p2",
+					Partitions: pointer.Int32(2),
 					UDF: &dfv1.UDF{
 						Container: &dfv1.Container{
 							Image: "my-image",
@@ -111,10 +112,11 @@ var (
 							Window: dfv1.Window{
 								Fixed: &dfv1.FixedWindow{
 									Length: &metav1.Duration{
-										Duration: time.Duration(60 * time.Second),
+										Duration: 60 * time.Second,
 									},
 								},
 							},
+							Keyed: true,
 							Storage: &dfv1.PBQStorage{
 								EmptyDir: &corev1.EmptyDirVolumeSource{},
 							},
@@ -149,6 +151,30 @@ var (
 					},
 				},
 				{
+					Name: "p4",
+					UDF: &dfv1.UDF{
+						Container: &dfv1.Container{
+							Image: "my-image",
+						},
+						GroupBy: &dfv1.GroupBy{
+							Window: dfv1.Window{
+								Session: &dfv1.SessionWindow{
+									Timeout: &metav1.Duration{
+										Duration: time.Duration(10 * time.Second),
+									},
+								},
+							},
+							Storage: &dfv1.PBQStorage{
+								PersistentVolumeClaim: &dfv1.PersistenceStrategy{
+									StorageClassName: nil,
+									AccessMode:       &dfv1.DefaultAccessMode,
+									VolumeSize:       &dfv1.DefaultVolumeSize,
+								},
+							},
+						},
+					},
+				},
+				{
 					Name: "output",
 					Sink: &dfv1.Sink{},
 				},
@@ -157,7 +183,59 @@ var (
 				{From: "input", To: "p1"},
 				{From: "p1", To: "p2"},
 				{From: "p2", To: "p3"},
-				{From: "p3", To: "output"},
+				{From: "p3", To: "p4"},
+				{From: "p4", To: "output"},
+			},
+		},
+	}
+
+	testForestPipeline = &dfv1.Pipeline{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-pl",
+			Namespace: "test-ns",
+		},
+		Spec: dfv1.PipelineSpec{
+			Vertices: []dfv1.AbstractVertex{
+				{
+					Name: "input",
+					Source: &dfv1.Source{
+						UDTransformer: &dfv1.UDTransformer{
+							Builtin: &dfv1.Transformer{Name: "filter"},
+						}},
+				},
+				{
+					Name: "input-1",
+					Source: &dfv1.Source{
+						UDTransformer: &dfv1.UDTransformer{
+							Builtin: &dfv1.Transformer{Name: "filter"},
+						}},
+				},
+				{
+					Name: "p1",
+					UDF: &dfv1.UDF{
+						Builtin: &dfv1.Function{Name: "cat"},
+					},
+				},
+				{
+					Name: "p2",
+					UDF: &dfv1.UDF{
+						Builtin: &dfv1.Function{Name: "cat"},
+					},
+				},
+				{
+					Name: "output",
+					Sink: &dfv1.Sink{},
+				},
+				{
+					Name: "output-1",
+					Sink: &dfv1.Sink{},
+				},
+			},
+			Edges: []dfv1.Edge{
+				{From: "input", To: "p1"},
+				{From: "p1", To: "output"},
+				{From: "input-1", To: "p2"},
+				{From: "p2", To: "output-1"},
 			},
 		},
 	}
@@ -188,14 +266,6 @@ func TestValidatePipeline(t *testing.T) {
 		err := ValidatePipeline(testObj)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "over the max limit")
-	})
-
-	t.Run("parallelism on non-reduce vertex", func(t *testing.T) {
-		testObj := testPipeline.DeepCopy()
-		testObj.Spec.Edges[0].Parallelism = pointer.Int32(3)
-		err := ValidatePipeline(testObj)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), `"parallelism" is not allowed for an edge leading to a non-reduce vertex`)
 	})
 
 	t.Run("no type", func(t *testing.T) {
@@ -238,6 +308,31 @@ func TestValidatePipeline(t *testing.T) {
 		assert.Contains(t, err.Error(), "can not specify both builtin transformer, and a customized image")
 	})
 
+	t.Run("udsource no image specified", func(t *testing.T) {
+		testObj := testPipeline.DeepCopy()
+		testObj.Spec.Vertices[0].Source.UDSource = &dfv1.UDSource{}
+		err := ValidatePipeline(testObj)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "a customized image is required")
+		testObj.Spec.Vertices[0].Source.UDSource = &dfv1.UDSource{
+			Container: &dfv1.Container{
+				Image: "",
+			},
+		}
+		err = ValidatePipeline(testObj)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "a customized image is required")
+	})
+
+	t.Run("source vertex having both udsource and built-in source specified ", func(t *testing.T) {
+		testObj := testPipeline.DeepCopy()
+		testObj.Spec.Vertices[0].Source.UDSource = &dfv1.UDSource{Container: &dfv1.Container{Image: "xxxx"}}
+		testObj.Spec.Vertices[0].Source.Generator = &dfv1.GeneratorSource{}
+		err := ValidatePipeline(testObj)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "only one of")
+	})
+
 	t.Run("udf no image and builtin specified", func(t *testing.T) {
 		testObj := testPipeline.DeepCopy()
 		testObj.Spec.Vertices[1].UDF.Builtin = nil
@@ -252,6 +347,52 @@ func TestValidatePipeline(t *testing.T) {
 		err := ValidatePipeline(testObj)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "can not specify both builtin function, and a customized image")
+	})
+
+	t.Run("forest - two pipelines with 1 source/sink", func(t *testing.T) {
+		testObj := testForestPipeline.DeepCopy()
+		err := ValidatePipeline(testObj)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid pipeline")
+	})
+
+	t.Run("forest - second pipeline has no sink", func(t *testing.T) {
+		testObj := testForestPipeline.DeepCopy()
+		testObj.Spec.Vertices[5].Sink = nil
+		testObj.Spec.Vertices[5].UDF = &dfv1.UDF{}
+		err := ValidatePipeline(testObj)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid vertex")
+	})
+
+	t.Run("forest - two pipelines with multiple sources/sinks", func(t *testing.T) {
+		testObj := testForestPipeline.DeepCopy()
+		testObj.Spec.Vertices = append(testObj.Spec.Vertices, dfv1.AbstractVertex{Name: "input-2", Source: &dfv1.Source{}})
+		testObj.Spec.Vertices = append(testObj.Spec.Vertices, dfv1.AbstractVertex{Name: "output-2", Sink: &dfv1.Sink{}})
+		testObj.Spec.Edges = append(testObj.Spec.Edges, dfv1.Edge{From: "input-2", To: "p1"})
+		testObj.Spec.Edges = append(testObj.Spec.Edges, dfv1.Edge{From: "p2", To: "output-2"})
+		err := ValidatePipeline(testObj)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid pipeline")
+	})
+
+	t.Run("forest - pipelines have cycles", func(t *testing.T) {
+		testObj := testForestPipeline.DeepCopy()
+		testObj.Spec.Edges = append(testObj.Spec.Edges, dfv1.Edge{From: "p1", To: "p1"})
+		testObj.Spec.Edges = append(testObj.Spec.Edges, dfv1.Edge{From: "p2", To: "p2"})
+		err := ValidatePipeline(testObj)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid pipeline")
+	})
+
+	t.Run("valid pipeline with multiple sinks/sources", func(t *testing.T) {
+		testObj := testPipeline.DeepCopy()
+		testObj.Spec.Vertices = append(testObj.Spec.Vertices, dfv1.AbstractVertex{Name: "input-1", Source: &dfv1.Source{}})
+		testObj.Spec.Vertices = append(testObj.Spec.Vertices, dfv1.AbstractVertex{Name: "output-1", Sink: &dfv1.Sink{}})
+		testObj.Spec.Edges = append(testObj.Spec.Edges, dfv1.Edge{From: "input-1", To: "p1"})
+		testObj.Spec.Edges = append(testObj.Spec.Edges, dfv1.Edge{From: "p1", To: "output-1"})
+		err := ValidatePipeline(testObj)
+		assert.NoError(t, err)
 	})
 
 	t.Run("edge - invalid vertex name", func(t *testing.T) {
@@ -275,7 +416,7 @@ func TestValidatePipeline(t *testing.T) {
 		testObj.Spec.Edges = append(testObj.Spec.Edges, dfv1.Edge{From: "p1", To: "input"})
 		err := ValidatePipeline(testObj)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "can not be define as 'to'")
+		assert.Contains(t, err.Error(), "source must have 0 from edges and at least 1 to edge")
 	})
 
 	t.Run("edge - sink as from", func(t *testing.T) {
@@ -283,21 +424,30 @@ func TestValidatePipeline(t *testing.T) {
 		testObj.Spec.Edges = append(testObj.Spec.Edges, dfv1.Edge{From: "output", To: "p1"})
 		err := ValidatePipeline(testObj)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "can not be define as 'from'")
+		assert.Contains(t, err.Error(), "sink must have 0 to edges and at least 1 from edge")
 	})
 
-	t.Run("vertex not in edges", func(t *testing.T) {
+	t.Run("edge - duplicate", func(t *testing.T) {
 		testObj := testPipeline.DeepCopy()
-		testObj.Spec.Vertices = append(testObj.Spec.Vertices, dfv1.AbstractVertex{Name: "input1", Source: &dfv1.Source{}})
+		testObj.Spec.Edges = append(testObj.Spec.Edges, dfv1.Edge{From: "input", To: "p1"})
 		err := ValidatePipeline(testObj)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "not all the vertex names are defined")
+		assert.Contains(t, err.Error(), "cannot define multiple edges")
+	})
+
+	t.Run("UDF not connected to pipeline", func(t *testing.T) {
+		testObj := testPipeline.DeepCopy()
+		testObj.Spec.Vertices = append(testObj.Spec.Vertices, dfv1.AbstractVertex{Name: "input1", UDF: &dfv1.UDF{Builtin: &dfv1.Function{Name: "cat"}}})
+		err := ValidatePipeline(testObj)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "UDF must have to and from edges")
 	})
 
 	t.Run("pipeline has not source", func(t *testing.T) {
 		testObj := testPipeline.DeepCopy()
 		testObj.Spec.Vertices[0].Source = nil
 		testObj.Spec.Vertices[0].UDF = &dfv1.UDF{Builtin: &dfv1.Function{Name: "cat"}}
+		testObj.Spec.Edges = append(testObj.Spec.Edges, dfv1.Edge{From: "input", To: "input"})
 		err := ValidatePipeline(testObj)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "pipeline has no source")
@@ -307,25 +457,20 @@ func TestValidatePipeline(t *testing.T) {
 		testObj := testPipeline.DeepCopy()
 		testObj.Spec.Vertices[2].Sink = nil
 		testObj.Spec.Vertices[2].UDF = &dfv1.UDF{Builtin: &dfv1.Function{Name: "cat"}}
+		testObj.Spec.Edges = append(testObj.Spec.Edges, dfv1.Edge{From: "output", To: "output"})
 		err := ValidatePipeline(testObj)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "pipeline has no sink")
 	})
 
-	t.Run("same from and to", func(t *testing.T) {
+	t.Run("last vertex is not sink", func(t *testing.T) {
 		testObj := testPipeline.DeepCopy()
-		testObj.Spec.Edges = append(testObj.Spec.Edges, dfv1.Edge{From: "p1", To: "p1"})
+		testObj.Spec.Vertices = append(testObj.Spec.Vertices, dfv1.AbstractVertex{Name: "bad-output", UDF: &dfv1.UDF{Builtin: &dfv1.Function{Name: "cat"}}})
+		testObj.Spec.Edges[1] = dfv1.Edge{From: "p1", To: "bad-output"}
+		testObj.Spec.Edges = append(testObj.Spec.Edges, dfv1.Edge{From: "bad-output", To: "p1"})
 		err := ValidatePipeline(testObj)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "same from and to")
-	})
-
-	t.Run("N from -> 1 to", func(t *testing.T) {
-		testObj := testPipeline.DeepCopy()
-		testObj.Spec.Edges = append(testObj.Spec.Edges, dfv1.Edge{From: "input", To: "output"})
-		err := ValidatePipeline(testObj)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "not supported")
+		assert.Contains(t, err.Error(), "sink must have 0 to edges and at least 1 from edge")
 	})
 
 	t.Run("or conditional forwarding", func(t *testing.T) {
@@ -401,16 +546,17 @@ func TestValidateReducePipeline(t *testing.T) {
 		assert.Contains(t, err.Error(), "a customized image is required")
 	})
 
-	t.Run("test source with keyed", func(t *testing.T) {
+	t.Run("test partitions", func(t *testing.T) {
 		testObj := testReducePipeline.DeepCopy()
-		testObj.Spec.Edges[0].Parallelism = pointer.Int32(2)
+		testObj.Spec.Vertices[0].Partitions = pointer.Int32(2)
 		err := ValidatePipeline(testObj)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), `"parallelism" should not > 1 for non-keyed windowing`)
-		testObj.Spec.Edges[0].Parallelism = pointer.Int32(-1)
+		assert.Contains(t, err.Error(), `partitions should not > 1 for source vertices`)
+		testObj.Spec.Vertices[0].Partitions = nil
+		testObj.Spec.Vertices[1].Partitions = pointer.Int32(2)
 		err = ValidatePipeline(testObj)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), `"parallelism" is < 1`)
+		assert.Contains(t, err.Error(), `partitions should not > 1 for non-keyed reduce vertices`)
 	})
 
 	t.Run("no storage", func(t *testing.T) {
@@ -545,4 +691,353 @@ func TestValidateUDF(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), `"length" is missing`)
 	})
+
+	t.Run("bad session timeout", func(t *testing.T) {
+		udf := dfv1.UDF{
+			GroupBy: &dfv1.GroupBy{
+				Window: dfv1.Window{
+					Session: &dfv1.SessionWindow{},
+				},
+			},
+		}
+		err := validateUDF(udf)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), `"timeout" is missing`)
+	})
+}
+
+func Test_validateSideInputs(t *testing.T) {
+	testObj := testPipeline.DeepCopy()
+	err := validateSideInputs(*testObj)
+	assert.NoError(t, err)
+	testObj.Spec.SideInputs = []dfv1.SideInput{
+		{Name: ""},
+	}
+	err = validateSideInputs(*testObj)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `name is missing`)
+
+	testObj.Spec.SideInputs = []dfv1.SideInput{
+		{Name: "s1"},
+	}
+	err = validateSideInputs(*testObj)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `container is missing`)
+
+	testObj.Spec.SideInputs[0].Container = &dfv1.Container{}
+	err = validateSideInputs(*testObj)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `image is missing`)
+
+	testObj.Spec.SideInputs[0].Container.Image = "my-image:latest"
+	err = validateSideInputs(*testObj)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `trigger is missing`)
+
+	testObj.Spec.SideInputs[0].Trigger = &dfv1.SideInputTrigger{}
+	err = validateSideInputs(*testObj)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `schedule is required`)
+
+	testObj.Spec.SideInputs[0].Trigger.Schedule = "@every 200s"
+	testObj.Spec.SideInputs = append(testObj.Spec.SideInputs, dfv1.SideInput{
+		Name: "s1",
+		Container: &dfv1.Container{
+			Image: "my-image:latest",
+		},
+		Trigger: &dfv1.SideInputTrigger{
+			Schedule: "@every 200s",
+		},
+	})
+	err = validateSideInputs(*testObj)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `is defined more than once`)
+
+	testObj.Spec.SideInputs[1].Name = "s2"
+	err = validateSideInputs(*testObj)
+	assert.NoError(t, err)
+
+	testObj.Spec.Vertices[1].SideInputs = []string{"s1", "s1"}
+	err = validateSideInputs(*testObj)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `is defined more than once`)
+
+	testObj.Spec.Vertices[1].SideInputs = []string{"s1", "s3"}
+	err = validateSideInputs(*testObj)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `is not defined`)
+
+	testObj.Spec.Vertices[1].SideInputs = []string{"s1", "s2"}
+	err = validateSideInputs(*testObj)
+	assert.NoError(t, err)
+}
+
+func Test_getCyclesFromVertex(t *testing.T) {
+	tests := []struct {
+		name                  string
+		edges                 []dfv1.Edge
+		startVertex           string
+		expectedCycleVertices map[string]struct{}
+	}{
+		{
+			name: "NoCycle",
+			edges: []dfv1.Edge{
+				{From: "A", To: "B"},
+				{From: "B", To: "C"},
+				{From: "B", To: "D"},
+			},
+			startVertex:           "A",
+			expectedCycleVertices: map[string]struct{}{},
+		},
+		{
+			name: "CycleToSelf",
+			edges: []dfv1.Edge{
+				{From: "A", To: "B"},
+				{From: "B", To: "B"},
+				{From: "B", To: "C"},
+			},
+			startVertex:           "A",
+			expectedCycleVertices: map[string]struct{}{"B": {}},
+		},
+		{
+			name: "CycleBackward",
+			edges: []dfv1.Edge{
+				{From: "A", To: "B"},
+				{From: "B", To: "A"},
+				{From: "B", To: "C"},
+			},
+			startVertex:           "A",
+			expectedCycleVertices: map[string]struct{}{"A": {}},
+		},
+		{
+			name: "Complicated",
+			edges: []dfv1.Edge{
+				{From: "A", To: "B"},
+				{From: "B", To: "C"},
+				{From: "B", To: "E"},
+				{From: "A", To: "D"},
+				{From: "D", To: "E"},
+				{From: "E", To: "A"}, // this cycles
+				{From: "E", To: "F"},
+			},
+			startVertex:           "A",
+			expectedCycleVertices: map[string]struct{}{"A": {}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Logf("running test: %q\n", tt.name)
+			mappedEdges, err := toVerticesMappedByFrom(tt.edges, constructVerticesByName(tt.edges))
+			assert.NoError(t, err)
+
+			cyclesFound := mappedEdges.getCyclesFromVertex(&dfv1.AbstractVertex{Name: tt.startVertex}, make(map[string]struct{}))
+
+			assert.Equal(t, len(tt.expectedCycleVertices), len(cyclesFound))
+			for cycleFound := range cyclesFound {
+				assert.Contains(t, tt.expectedCycleVertices, cycleFound)
+			}
+		})
+	}
+
+}
+
+func constructVerticesByName(edges []dfv1.Edge) map[string]*dfv1.AbstractVertex {
+	mappedVertices := make(map[string]*dfv1.AbstractVertex)
+	for _, edge := range edges {
+		mappedVertices[edge.From] = &dfv1.AbstractVertex{Name: edge.From} // fine if we see the same one twice and overwrite
+		mappedVertices[edge.To] = &dfv1.AbstractVertex{Name: edge.To}
+	}
+	return mappedVertices
+}
+
+func Test_validateCycles(t *testing.T) {
+	tests := []struct {
+		name         string
+		pipelineSpec *dfv1.PipelineSpec
+		success      bool
+	}{
+		{
+			name: "NoCycle",
+			pipelineSpec: &dfv1.PipelineSpec{
+				Vertices: []dfv1.AbstractVertex{
+					{Name: "A", Source: &dfv1.Source{}},
+					{Name: "B", UDF: &dfv1.UDF{}},
+					{Name: "C", UDF: &dfv1.UDF{}},
+					{Name: "D", UDF: &dfv1.UDF{}},
+					{Name: "E", UDF: &dfv1.UDF{}},
+					{Name: "F", Source: &dfv1.Source{}},
+					{Name: "G", UDF: &dfv1.UDF{}},
+				},
+				Edges: []dfv1.Edge{
+					{From: "A", To: "B"},
+					{From: "B", To: "C"},
+					{From: "A", To: "D"},
+					{From: "D", To: "E"},
+					{From: "E", To: "B"},
+					{From: "F", To: "G"},
+					{From: "G", To: "D"},
+				},
+			},
+			success: true,
+		},
+		{
+			name: "CycleToSelf-NoReduce",
+			pipelineSpec: &dfv1.PipelineSpec{
+				Vertices: []dfv1.AbstractVertex{
+					{Name: "A", Source: &dfv1.Source{}},
+					{Name: "B", UDF: &dfv1.UDF{GroupBy: &dfv1.GroupBy{}}}, //Reduce vertex
+					{Name: "C", UDF: &dfv1.UDF{}},
+					{Name: "D", UDF: &dfv1.UDF{}},
+					{Name: "E", UDF: &dfv1.UDF{}},
+					{Name: "F", Source: &dfv1.Source{}},
+					{Name: "G", UDF: &dfv1.UDF{}},
+				},
+				Edges: []dfv1.Edge{
+					{From: "A", To: "B"},
+					{From: "B", To: "C"},
+					{From: "C", To: "C"}, // cycle to self
+					{From: "C", To: "E"},
+					{From: "A", To: "D"},
+					{From: "D", To: "E"},
+					{From: "F", To: "G"},
+					{From: "G", To: "D"},
+				},
+			},
+			success: true,
+		},
+		{
+			name: "CycleToSelf-CycleIsReduce",
+			pipelineSpec: &dfv1.PipelineSpec{
+				Vertices: []dfv1.AbstractVertex{
+					{Name: "A", Source: &dfv1.Source{}},
+					{Name: "B", UDF: &dfv1.UDF{GroupBy: &dfv1.GroupBy{}}}, //Reduce vertex
+					{Name: "C", UDF: &dfv1.UDF{}},
+					{Name: "D", UDF: &dfv1.UDF{}},
+					{Name: "E", UDF: &dfv1.UDF{}},
+					{Name: "F", Source: &dfv1.Source{}},
+					{Name: "G", UDF: &dfv1.UDF{}},
+				},
+				Edges: []dfv1.Edge{
+					{From: "A", To: "B"},
+					{From: "B", To: "B"}, // cycle to self
+					{From: "B", To: "C"},
+					{From: "A", To: "D"},
+					{From: "D", To: "E"},
+					{From: "F", To: "G"},
+					{From: "G", To: "D"},
+				},
+			},
+			success: false,
+		},
+		{
+			name: "CycleToSelf-ReduceAhead",
+			pipelineSpec: &dfv1.PipelineSpec{
+				Vertices: []dfv1.AbstractVertex{
+					{Name: "A", Source: &dfv1.Source{}},
+					{Name: "B", UDF: &dfv1.UDF{}},
+					{Name: "C", UDF: &dfv1.UDF{GroupBy: &dfv1.GroupBy{}}}, //Reduce vertex
+					{Name: "D", UDF: &dfv1.UDF{}},
+					{Name: "E", UDF: &dfv1.UDF{}},
+					{Name: "F", Source: &dfv1.Source{}},
+					{Name: "G", UDF: &dfv1.UDF{}},
+				},
+				Edges: []dfv1.Edge{
+					{From: "A", To: "B"},
+					{From: "B", To: "B"}, // cycle to self
+					{From: "B", To: "C"},
+					{From: "A", To: "D"},
+					{From: "D", To: "E"},
+					{From: "F", To: "G"},
+					{From: "G", To: "D"},
+				},
+			},
+			success: false,
+		},
+		{
+			name: "CycleBackward-ReduceAhead",
+			pipelineSpec: &dfv1.PipelineSpec{
+				Vertices: []dfv1.AbstractVertex{
+					{Name: "A", Source: &dfv1.Source{}},
+					{Name: "B", UDF: &dfv1.UDF{}}, //Reduce vertex
+					{Name: "C", UDF: &dfv1.UDF{}},
+					{Name: "D", UDF: &dfv1.UDF{}},
+					{Name: "E", UDF: &dfv1.UDF{GroupBy: &dfv1.GroupBy{}}}, //Reduce vertex
+					{Name: "F", Source: &dfv1.Source{}},
+					{Name: "G", UDF: &dfv1.UDF{}},
+					{Name: "H", UDF: &dfv1.UDF{}},
+				},
+				Edges: []dfv1.Edge{
+					{From: "A", To: "B"},
+					{From: "B", To: "C"},
+					{From: "A", To: "D"},
+					{From: "D", To: "E"},
+					{From: "F", To: "G"},
+					{From: "G", To: "D"},
+					{From: "D", To: "G"}, // cycle backward
+					{From: "E", To: "H"},
+				},
+			},
+			success: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Logf("running test: %q\n", tt.name)
+			err := validateCycles(tt.pipelineSpec)
+			if tt.success {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+			}
+		})
+	}
+}
+
+func Test_validateIdleSource(t *testing.T) {
+	testObj := testPipeline.DeepCopy()
+	testObj.Spec.Watermark.IdleSource = &dfv1.IdleSource{
+		Threshold:   &metav1.Duration{Duration: 5 * time.Second},
+		IncrementBy: &metav1.Duration{Duration: 5 * time.Second},
+	}
+	err := validateIdleSource(*testObj)
+	assert.NoError(t, err)
+
+	testObj.Spec.Watermark.IdleSource = &dfv1.IdleSource{
+		Threshold: nil,
+	}
+	err = validateIdleSource(*testObj)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `invalid idle source watermark config, threshold is missing`)
+
+	testObj.Spec.Watermark.IdleSource = &dfv1.IdleSource{
+		Threshold: &metav1.Duration{Duration: 0 * time.Second},
+	}
+	err = validateIdleSource(*testObj)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `invalid idle source watermark config, threshold should be greater than 0`)
+
+	testObj.Spec.Watermark.IdleSource = &dfv1.IdleSource{
+		Threshold:   &metav1.Duration{Duration: 5 * time.Second},
+		IncrementBy: nil,
+	}
+	err = validateIdleSource(*testObj)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `invalid idle source watermark config, incrementBy is missing`)
+
+	testObj.Spec.Watermark.IdleSource = &dfv1.IdleSource{
+		Threshold:   &metav1.Duration{Duration: 5 * time.Second},
+		IncrementBy: &metav1.Duration{Duration: 0 * time.Second},
+	}
+	err = validateIdleSource(*testObj)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `invalid idle source watermark config, incrementBy should be greater than 0`)
+
+	testObj.Spec.Watermark.IdleSource = &dfv1.IdleSource{
+		Threshold:   &metav1.Duration{Duration: 2 * time.Second},
+		IncrementBy: &metav1.Duration{Duration: 5 * time.Second},
+	}
+	err = validateIdleSource(*testObj)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `invalid idle source watermark config, threshold should be greater than or equal to incrementBy`)
 }

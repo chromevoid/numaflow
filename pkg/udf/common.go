@@ -19,6 +19,7 @@ package udf
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 	"github.com/numaproj/numaflow/pkg/isb"
@@ -29,70 +30,142 @@ import (
 	redisclient "github.com/numaproj/numaflow/pkg/shared/clients/redis"
 )
 
-func buildRedisBufferIO(ctx context.Context, fromBufferName string, vertexInstance *dfv1.VertexInstance) (isb.BufferReader, map[string]isb.BufferWriter) {
-	writers := make(map[string]isb.BufferWriter)
+func buildRedisBufferIO(ctx context.Context, vertexInstance *dfv1.VertexInstance) ([]isb.BufferReader, map[string][]isb.BufferWriter, error) {
+	var readers []isb.BufferReader
 	redisClient := redisclient.NewInClusterRedisClient()
-	fromGroup := fromBufferName + "-group"
-	readerOpts := []redisclient.Option{}
+	var readerOpts []redisclient.Option
 	if x := vertexInstance.Vertex.Spec.Limits; x != nil && x.ReadTimeout != nil {
 		readerOpts = append(readerOpts, redisclient.WithReadTimeOut(x.ReadTimeout.Duration))
 	}
-	consumer := fmt.Sprintf("%s-%v", vertexInstance.Vertex.Name, vertexInstance.Replica)
-	reader := redisisb.NewBufferRead(ctx, redisClient, fromBufferName, fromGroup, consumer, readerOpts...)
+	// create readers for owned buffer partitions.
+	// For reduce vertex, we only need to read from one buffer partition.
+	if vertexInstance.Vertex.GetVertexType() == dfv1.VertexTypeReduceUDF {
+		var fromBufferPartition string
+		// find the buffer partition owned by this replica.
+		for _, b := range vertexInstance.Vertex.OwnedBuffers() {
+			if strings.HasSuffix(b, fmt.Sprintf("-%d", vertexInstance.Replica)) {
+				fromBufferPartition = b
+				break
+			}
+		}
+		if len(fromBufferPartition) == 0 {
+			return nil, nil, fmt.Errorf("can not find from buffer")
+		}
+
+		fromGroup := fromBufferPartition + "-group"
+		consumer := fmt.Sprintf("%s-%v", vertexInstance.Vertex.Name, vertexInstance.Replica)
+		// since we read from one buffer partition, fromPartitionIdx is 0.
+		reader := redisisb.NewBufferRead(ctx, redisClient, fromBufferPartition, fromGroup, consumer, 0, readerOpts...)
+		readers = append(readers, reader)
+	} else {
+		// for map vertex, we need to read from all buffer partitions. So create readers for all buffer partitions.
+		for _, bufferPartition := range vertexInstance.Vertex.OwnedBuffers() {
+			fromGroup := bufferPartition + "-group"
+			consumer := fmt.Sprintf("%s-%v", vertexInstance.Vertex.Name, vertexInstance.Replica)
+			reader := redisisb.NewBufferRead(ctx, redisClient, bufferPartition, fromGroup, consumer, 0, readerOpts...)
+			readers = append(readers, reader)
+		}
+	}
+
+	// create writers for toVertex's buffer partitions.
+	// we create a map of toVertex -> []BufferWriter(writer for each partition)
+	writers := make(map[string][]isb.BufferWriter)
 	for _, e := range vertexInstance.Vertex.Spec.ToEdges {
 
 		writeOpts := []redisclient.Option{
 			redisclient.WithBufferFullWritingStrategy(e.BufferFullWritingStrategy()),
 		}
-		if x := e.Limits; x != nil && x.BufferMaxLength != nil {
+		if x := e.ToVertexLimits; x != nil && x.BufferMaxLength != nil {
 			writeOpts = append(writeOpts, redisclient.WithMaxLength(int64(*x.BufferMaxLength)))
 		}
-		if x := e.Limits; x != nil && x.BufferUsageLimit != nil {
+		if x := e.ToVertexLimits; x != nil && x.BufferUsageLimit != nil {
 			writeOpts = append(writeOpts, redisclient.WithBufferUsageLimit(float64(*x.BufferUsageLimit)/100))
 		}
-		buffers := dfv1.GenerateEdgeBufferNames(vertexInstance.Vertex.Namespace, vertexInstance.Vertex.Spec.PipelineName, e)
-		for _, buffer := range buffers {
-			writer := redisisb.NewBufferWrite(ctx, redisClient, buffer, buffer+"-group", writeOpts...)
-			writers[buffer] = writer
+		var edgeBuffers []isb.BufferWriter
+		partitionedBuffers := dfv1.GenerateBufferNames(vertexInstance.Vertex.Namespace, vertexInstance.Vertex.Spec.PipelineName, e.To, e.GetToVertexPartitionCount())
+		for partitionIdx, partition := range partitionedBuffers {
+			writer := redisisb.NewBufferWrite(ctx, redisClient, partition, partition+"-group", int32(partitionIdx), writeOpts...)
+			edgeBuffers = append(edgeBuffers, writer)
 		}
+		writers[e.To] = edgeBuffers
 	}
 
-	return reader, writers
+	return readers, writers, nil
 }
 
-func buildJetStreamBufferIO(ctx context.Context, fromBufferName string, vertexInstance *dfv1.VertexInstance) (isb.BufferReader, map[string]isb.BufferWriter, error) {
-	writers := make(map[string]isb.BufferWriter)
-	fromStreamName := isbsvc.JetStreamName(vertexInstance.Vertex.Spec.PipelineName, fromBufferName)
-	readOptions := []jetstreamisb.ReadOption{
-		jetstreamisb.WithUsingAckInfoAsRate(true),
-	}
+func buildJetStreamBufferIO(ctx context.Context, vertexInstance *dfv1.VertexInstance, clientPool *jsclient.ClientPool) ([]isb.BufferReader, map[string][]isb.BufferWriter, error) {
+
+	// create readers for owned buffer partitions.
+	var readers []isb.BufferReader
+	var readOptions []jetstreamisb.ReadOption
 	if x := vertexInstance.Vertex.Spec.Limits; x != nil && x.ReadTimeout != nil {
 		readOptions = append(readOptions, jetstreamisb.WithReadTimeOut(x.ReadTimeout.Duration))
 	}
-	reader, err := jetstreamisb.NewJetStreamBufferReader(ctx, jsclient.NewInClusterJetStreamClient(), fromBufferName, fromStreamName, fromStreamName, readOptions...)
-	if err != nil {
-		return nil, nil, err
+
+	// create readers for owned buffer partitions.
+	// For reduce vertex, we only need to read from one buffer partition.
+	if vertexInstance.Vertex.GetVertexType() == dfv1.VertexTypeReduceUDF {
+		// choose the buffer that corresponds to this reduce processor because
+		// reducer's incoming buffer can have more than one partition for parallelism
+		var fromBufferPartition string
+		// find the buffer partition owned by this replica.
+		for _, b := range vertexInstance.Vertex.OwnedBuffers() {
+			if strings.HasSuffix(b, fmt.Sprintf("-%d", vertexInstance.Replica)) {
+				fromBufferPartition = b
+				break
+			}
+		}
+		if len(fromBufferPartition) == 0 {
+			return nil, nil, fmt.Errorf("can not find from buffer")
+		}
+
+		fromStreamName := isbsvc.JetStreamName(fromBufferPartition)
+		// reduce processor only has one buffer partition
+		// since we read from one buffer partition, fromPartitionIdx is 0.
+		reader, err := jetstreamisb.NewJetStreamBufferReader(ctx, clientPool.NextAvailableClient(), fromBufferPartition, fromStreamName, fromStreamName, 0, readOptions...)
+		if err != nil {
+			return nil, nil, err
+		}
+		readers = append(readers, reader)
+	} else {
+		// for map vertex, we need to read from all buffer partitions. So create readers for all buffer partitions.
+		for index, bufferPartition := range vertexInstance.Vertex.OwnedBuffers() {
+			fromStreamName := isbsvc.JetStreamName(bufferPartition)
+
+			reader, err := jetstreamisb.NewJetStreamBufferReader(ctx, clientPool.NextAvailableClient(), bufferPartition, fromStreamName, fromStreamName, int32(index), readOptions...)
+			if err != nil {
+				return nil, nil, err
+			}
+			readers = append(readers, reader)
+		}
 	}
 
+	// create writers for toVertex's buffer partitions.
+	// we create a map of toVertex -> []BufferWriter(writer for each partition)
+	writers := make(map[string][]isb.BufferWriter)
 	for _, e := range vertexInstance.Vertex.Spec.ToEdges {
 		writeOpts := []jetstreamisb.WriteOption{
 			jetstreamisb.WithBufferFullWritingStrategy(e.BufferFullWritingStrategy()),
 		}
-		if x := e.Limits; x != nil && x.BufferMaxLength != nil {
+		if x := e.ToVertexLimits; x != nil && x.BufferMaxLength != nil {
 			writeOpts = append(writeOpts, jetstreamisb.WithMaxLength(int64(*x.BufferMaxLength)))
 		}
-		if x := e.Limits; x != nil && x.BufferUsageLimit != nil {
+		if x := e.ToVertexLimits; x != nil && x.BufferUsageLimit != nil {
 			writeOpts = append(writeOpts, jetstreamisb.WithBufferUsageLimit(float64(*x.BufferUsageLimit)/100))
 		}
-		buffers := dfv1.GenerateEdgeBufferNames(vertexInstance.Vertex.Namespace, vertexInstance.Vertex.Spec.PipelineName, e)
-		for _, buffer := range buffers {
-			streamName := isbsvc.JetStreamName(vertexInstance.Vertex.Spec.PipelineName, buffer)
-			writer, err := jetstreamisb.NewJetStreamBufferWriter(ctx, jsclient.NewInClusterJetStreamClient(), buffer, streamName, streamName, writeOpts...)
+
+		partitionedBuffers := dfv1.GenerateBufferNames(vertexInstance.Vertex.Namespace, vertexInstance.Vertex.Spec.PipelineName, e.To, e.GetToVertexPartitionCount())
+		var edgeBuffers []isb.BufferWriter
+		for partitionIdx, partition := range partitionedBuffers {
+			streamName := isbsvc.JetStreamName(partition)
+			writer, err := jetstreamisb.NewJetStreamBufferWriter(ctx, clientPool.NextAvailableClient(), partition, streamName, streamName, int32(partitionIdx), writeOpts...)
 			if err != nil {
 				return nil, nil, err
 			}
-			writers[buffer] = writer
+			edgeBuffers = append(edgeBuffers, writer)
 		}
+
+		writers[e.To] = edgeBuffers
 	}
-	return reader, writers, nil
+	return readers, writers, nil
 }

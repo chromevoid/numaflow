@@ -14,6 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// package fetch contains the logic to fetch the watermark for an offset.
+// we iterate over all the active processors and get the smallest watermark.
+// if the processor is not active, and if the current offset is greater than the last offset of the processor,
+// we delete the processor using processor manager.
+
 package fetch
 
 import (
@@ -21,6 +26,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -33,74 +39,103 @@ import (
 
 // edgeFetcher is a fetcher between two vertices.
 type edgeFetcher struct {
-	ctx              context.Context
-	bufferName       string
-	storeWatcher     store.WatermarkStoreWatcher
-	processorManager *ProcessorManager
+	processorManager *processorManager
+	lastProcessedWm  []int64
 	log              *zap.SugaredLogger
+	sync.RWMutex
 }
 
-// NewEdgeFetcher returns a new edge fetcher.
-func NewEdgeFetcher(ctx context.Context, bufferName string, storeWatcher store.WatermarkStoreWatcher) Fetcher {
-	log := logging.FromContext(ctx).With("bufferName", bufferName)
+// NewEdgeFetcher returns a new edge fetcher. This could have been private, except that UI uses it.
+func NewEdgeFetcher(ctx context.Context, wmStore store.WatermarkStore, fromBufferPartitionCount int, opts ...Option) *edgeFetcher {
+	log := logging.FromContext(ctx)
 	log.Info("Creating a new edge watermark fetcher")
+	var lastProcessedWm []int64
+
+	// to track the last processed watermark for each partition.
+	for i := 0; i < fromBufferPartitionCount; i++ {
+		lastProcessedWm = append(lastProcessedWm, -1)
+	}
+
+	// create the processor manager to track the processors and their offset timelines.
+	manager := newProcessorManager(ctx, wmStore, int32(fromBufferPartitionCount), opts...)
+
 	return &edgeFetcher{
-		ctx:              ctx,
-		bufferName:       bufferName,
-		storeWatcher:     storeWatcher,
-		processorManager: NewProcessorManager(ctx, storeWatcher),
+		processorManager: manager,
+		lastProcessedWm:  lastProcessedWm,
 		log:              log,
 	}
 }
 
-// GetWatermark gets the smallest timestamp for the given offset
-func (e *edgeFetcher) GetWatermark(inputOffset isb.Offset) wmb.Watermark {
+// updateWatermark updates the lastProcessedWm of the given partition based on the given offset,
+// deletes any inactive processor, and returns the updated watermark.
+func (e *edgeFetcher) updateWatermark(inputOffset isb.Offset, fromPartitionIdx int32) wmb.Watermark {
 	var offset, err = inputOffset.Sequence()
 	if err != nil {
 		e.log.Errorw("Unable to get offset from isb.Offset.Sequence()", zap.Error(err))
-		return wmb.Watermark(time.Unix(-1, 0))
+		return wmb.InitialWatermark
 	}
 	var debugString strings.Builder
 	var epoch int64 = math.MaxInt64
-	var allProcessors = e.processorManager.GetAllProcessors()
+	var allProcessors = e.processorManager.getAllProcessors()
 	for _, p := range allProcessors {
+		// headOffset is used to check whether this pod can be deleted.
+		headOffset := int64(-1)
+		// iterate over all the timelines of the processor and get the smallest watermark
 		debugString.WriteString(fmt.Sprintf("[Processor: %v] \n", p))
-		var t = p.offsetTimeline.GetEventTime(inputOffset)
-		if t == -1 { // watermark cannot be computed, perhaps a new processing unit was added or offset fell off the timeline
-			epoch = t
-		} else if t < epoch {
-			epoch = t
+		for index, tl := range p.GetOffsetTimelines() {
+			// we only need to check the timelines of the partition we are reading from
+			if index == int(fromPartitionIdx) {
+				var t = tl.GetEventTime(inputOffset)
+				if t == -1 { // watermark cannot be computed, perhaps a new processing unit was added or offset fell off the timeline
+					epoch = t
+				} else if t < epoch {
+					epoch = t
+				}
+			}
+			// get the highest head offset among all the partitions of the processor so we can check later on whether the processor
+			// in question is stale (its head is far behind)
+			if tl.GetHeadOffset() > headOffset {
+				headOffset = tl.GetHeadOffset()
+			}
 		}
-		if p.IsDeleted() && (offset > p.offsetTimeline.GetHeadOffset()) {
-			// if the pod is not active and the current offset is ahead of all offsets in Timeline
-			e.processorManager.DeleteProcessor(p.entity.GetName())
+
+		// if the pod is not active and the head offset of all the timelines is less than the input offset, delete the processor
+		// (this means we are processing data later than what the stale processor has processed)
+		if p.IsDeleted() && (offset > headOffset) {
+			e.log.Infow("Deleting processor because it's stale", zap.String("processor", p.GetEntity().GetName()))
+			e.processorManager.deleteProcessor(p.GetEntity().GetName())
 		}
 	}
 	// if there are no processors
 	if epoch == math.MaxInt64 {
 		epoch = -1
 	}
-	e.log.Debugf("%s[%s] get watermark for offset %d: %+v", debugString.String(), e.bufferName, offset, epoch)
+	// update the last processed watermark for the partition
+	e.Lock()
+	e.lastProcessedWm[fromPartitionIdx] = epoch
+	e.Unlock()
 
+	e.log.Debugf("%s processed watermark for offset %d: %+v", debugString.String(), offset, epoch)
 	return wmb.Watermark(time.UnixMilli(epoch))
 }
 
-// GetHeadWatermark returns the latest watermark among all processors. This can be used in showing the watermark
+// ComputeHeadWatermark returns the smallest head watermark among all the processors for given partition
+// This can be used in showing the watermark
 // progression for a vertex when not consuming the messages directly (eg. UX, tests)
 // NOTE
 //   - We don't use this function in the regular pods in the vertex.
-//   - UX only uses GetHeadWatermark, so the `p.IsDeleted()` check in the GetWatermark never happens.
+//   - UX only uses ComputeHeadWatermark, so the `p.IsDeleted()` check in updateWatermark() never happens.
 //     Meaning, in the UX (daemon service) we never delete any processor.
-func (e *edgeFetcher) GetHeadWatermark() wmb.Watermark {
+func (e *edgeFetcher) ComputeHeadWatermark(fromPartitionIdx int32) wmb.Watermark {
 	var debugString strings.Builder
 	var headWatermark int64 = math.MaxInt64
-	var allProcessors = e.processorManager.GetAllProcessors()
+	var allProcessors = e.processorManager.getAllProcessors()
 	// get the head offset of each processor
 	for _, p := range allProcessors {
 		if !p.IsActive() {
 			continue
 		}
-		var w = p.offsetTimeline.GetHeadWMB()
+		var w = p.GetOffsetTimelines()[fromPartitionIdx].GetHeadWMB()
 		e.log.Debugf("Processor: %v (headOffset:%d) (headWatermark:%d) (headIdle:%t)", p, w.Offset, w.Watermark, w.Idle)
 		debugString.WriteString(fmt.Sprintf("[Processor:%v] (headOffset:%d) (headWatermark:%d) (headIdle:%t) \n", p, w.Offset, w.Watermark, w.Idle))
 		if w.Offset != -1 {
@@ -110,16 +145,16 @@ func (e *edgeFetcher) GetHeadWatermark() wmb.Watermark {
 			}
 		}
 	}
-	e.log.Debugf("GetHeadWatermark: %s", debugString.String())
+	e.log.Debugf("ComputeHeadWatermark: %s", debugString.String())
 	if headWatermark == math.MaxInt64 {
 		// Use -1 as default watermark value to indicate there is no valid watermark yet.
-		return wmb.Watermark(time.UnixMilli(-1))
+		return wmb.InitialWatermark
 	}
 	return wmb.Watermark(time.UnixMilli(headWatermark))
 }
 
-// GetHeadWMB returns the latest idle WMB with the smallest watermark among all processors
-func (e *edgeFetcher) GetHeadWMB() wmb.WMB {
+// updateHeadIdleWMB updates the smallest head idle WMB for the given partition and returns the updated head idle WMB if exists.
+func (e *edgeFetcher) updateHeadIdleWMB(fromPartitionIdx int32) wmb.WMB {
 	var debugString strings.Builder
 
 	var headWMB = wmb.WMB{
@@ -128,20 +163,21 @@ func (e *edgeFetcher) GetHeadWMB() wmb.WMB {
 		Watermark: math.MaxInt64,
 	}
 	// if any head wmb from Vn-1 processors is not idle, we skip publishing
-	var allProcessors = e.processorManager.GetAllProcessors()
+	var allProcessors = e.processorManager.getAllProcessors()
 	for _, p := range allProcessors {
 		debugString.WriteString(fmt.Sprintf("[Processor: %v] \n", p))
 		if !p.IsActive() {
 			continue
 		}
-		// we only consider the latest wmb in the offset timeline
-		var curHeadWMB = p.offsetTimeline.GetHeadWMB()
+		// find the smallest head offset among the head WMBs
+		// we only consider the latest wmb in the offset timeline for the given partition
+		var curHeadWMB = p.GetOffsetTimelines()[fromPartitionIdx].GetHeadWMB()
 		if !curHeadWMB.Idle {
-			e.log.Debugf("[%s] GetHeadWMB finds an active head wmb for offset, return early", e.bufferName)
+			e.log.Debugf("updateHeadIdleWMB finds an active head wmb for offset, return early")
 			return wmb.WMB{}
 		}
 		if curHeadWMB.Watermark != -1 {
-			// find the smallest head offset of the smallest watermark
+			// find the smallest head offset of the smallest WMB.watermark (though latest)
 			if curHeadWMB.Watermark < headWMB.Watermark {
 				headWMB = curHeadWMB
 			} else if curHeadWMB.Watermark == headWMB.Watermark && curHeadWMB.Offset < headWMB.Offset {
@@ -153,16 +189,25 @@ func (e *edgeFetcher) GetHeadWMB() wmb.WMB {
 		// there is no valid watermark yet
 		return wmb.WMB{}
 	}
-	e.log.Debugf("GetHeadWMB: %s[%s] get idle head wmb for offset", debugString.String(), e.bufferName)
+
+	// update the last processed watermark for the partition
+	e.Lock()
+	e.lastProcessedWm[fromPartitionIdx] = headWMB.Watermark
+	e.Unlock()
+
+	e.log.Debugf("updateHeadIdleWMB: %s get idle head wmb for offset", debugString.String())
 	return headWMB
 }
 
-// Close function closes the watchers.
-func (e *edgeFetcher) Close() error {
-	e.log.Infof("Closing edge watermark fetcher")
-	if e.storeWatcher != nil {
-		e.storeWatcher.HeartbeatWatcher().Close()
-		e.storeWatcher.OffsetTimelineWatcher().Close()
+// getWatermark returns the smallest last processed watermark among all the partitions.
+func (e *edgeFetcher) getWatermark() wmb.Watermark {
+	minWm := int64(math.MaxInt64)
+	e.RLock()
+	for _, wm := range e.lastProcessedWm {
+		if minWm > wm {
+			minWm = wm
+		}
 	}
-	return nil
+	e.RUnlock()
+	return wmb.Watermark(time.UnixMilli(minWm))
 }

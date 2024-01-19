@@ -22,12 +22,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/numaproj/numaflow/pkg/watermark/processor"
+	"github.com/numaproj/numaflow/pkg/watermark/entity"
 )
 
 func TestFromProcessor_setStatus(t *testing.T) {
 	var ctx = context.Background()
-	p := NewProcessorToFetch(ctx, processor.NewProcessorEntity("testPod1"), 5)
+	p := NewProcessorToFetch(ctx, entity.NewProcessorEntity("test-pod"), 5, 1)
 	p.setStatus(_inactive)
 	assert.Equal(t, _inactive, p.status)
 }

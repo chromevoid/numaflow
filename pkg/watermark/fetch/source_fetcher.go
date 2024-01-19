@@ -25,7 +25,6 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
 	"github.com/numaproj/numaflow/pkg/watermark/store"
 	"github.com/numaproj/numaflow/pkg/watermark/wmb"
@@ -33,79 +32,68 @@ import (
 
 // sourceFetcher is a fetcher on source buffers.
 type sourceFetcher struct {
-	ctx              context.Context
-	sourceBufferName string
-	storeWatcher     store.WatermarkStoreWatcher
-	processorManager *ProcessorManager
+	processorManager *processorManager
 	log              *zap.SugaredLogger
 }
 
-// NewSourceFetcher returns a new source fetcher, processorManager has the details about the processors responsible for writing to the
+// NewSourceFetcher returns a new source fetcher, pm has the details about the processors responsible for writing to the
 // buckets of the source buffer.
-func NewSourceFetcher(ctx context.Context, sourceBufferName string, storeWatcher store.WatermarkStoreWatcher) Fetcher {
-	log := logging.FromContext(ctx).With("sourceBufferName", sourceBufferName)
+func NewSourceFetcher(ctx context.Context, store store.WatermarkStore, opts ...Option) SourceFetcher {
+	log := logging.FromContext(ctx)
 	log.Info("Creating a new source watermark fetcher")
+	manager := newProcessorManager(ctx, store, 1, opts...)
 	return &sourceFetcher{
-		ctx:              ctx,
-		sourceBufferName: sourceBufferName,
-		storeWatcher:     storeWatcher,
-		processorManager: NewProcessorManager(ctx, storeWatcher),
+		processorManager: manager,
 		log:              log,
 	}
 }
 
-// GetWatermark returns the lowest of the latest Watermark of all the processors,
+func (e *sourceFetcher) ComputeWatermark() wmb.Watermark {
+	return e.getWatermark()
+}
+
+// getWatermark returns the lowest of the latest Watermark of all the processors,
 // it ignores the input Offset.
-func (e *sourceFetcher) GetWatermark(_ isb.Offset) wmb.Watermark {
+func (e *sourceFetcher) getWatermark() wmb.Watermark {
 	var epoch int64 = math.MaxInt64
 	var debugString strings.Builder
 
-	for _, p := range e.processorManager.GetAllProcessors() {
+	for _, p := range e.processorManager.getAllProcessors() {
+
+		if len(p.GetOffsetTimelines()) != 1 {
+			e.log.Fatalf("sourceFetcher %+v has %d offset timelines, expected 1", e, len(p.GetOffsetTimelines()))
+		}
+		offsetTimeline := p.GetOffsetTimelines()[0]
 		debugString.WriteString(fmt.Sprintf("[Processor: %v] \n", p))
 		if !p.IsActive() {
 			continue
 		}
-		if p.offsetTimeline.GetHeadWatermark() < epoch {
-			epoch = p.offsetTimeline.GetHeadWatermark()
+		if offsetTimeline.GetHeadWatermark() < epoch {
+			epoch = offsetTimeline.GetHeadWatermark()
 		}
 	}
 	if epoch == math.MaxInt64 {
-		epoch = -1
+		epoch = wmb.InitialWatermark.UnixMilli()
 	}
 	e.log.Debugf("%s get watermark for offset : %+v", debugString.String(), epoch)
 	return wmb.Watermark(time.UnixMilli(epoch))
 }
 
-// GetHeadWatermark returns the latest watermark of all the processors.
-func (e *sourceFetcher) GetHeadWatermark() wmb.Watermark {
+// ComputeHeadWatermark returns the latest watermark of all the processors for the given partition.
+func (e *sourceFetcher) ComputeHeadWatermark(fromPartitionIdx int32) wmb.Watermark {
 	var epoch int64 = math.MinInt64
-	for _, p := range e.processorManager.GetAllProcessors() {
+	for _, p := range e.processorManager.getAllProcessors() {
 		if !p.IsActive() {
 			continue
 		}
-		if p.offsetTimeline.GetHeadWatermark() > epoch {
-			epoch = p.offsetTimeline.GetHeadWatermark()
+		tl := p.GetOffsetTimelines()[fromPartitionIdx]
+		if tl.GetHeadWatermark() > epoch {
+			epoch = tl.GetHeadWatermark()
 		}
 	}
 	if epoch == math.MinInt64 {
 		// Use -1 as default watermark value to indicate there is no valid watermark yet.
-		return wmb.Watermark(time.UnixMilli(-1))
+		return wmb.InitialWatermark
 	}
 	return wmb.Watermark(time.UnixMilli(epoch))
-}
-
-// GetHeadWMB returns the latest idle WMB among all processors
-func (e *sourceFetcher) GetHeadWMB() wmb.WMB {
-	// TODO: what would this be...
-	return wmb.WMB{}
-}
-
-// Close function closes the watchers.
-func (e *sourceFetcher) Close() error {
-	e.log.Infof("Closing source watermark fetcher")
-	if e.storeWatcher != nil {
-		e.storeWatcher.HeartbeatWatcher().Close()
-		e.storeWatcher.OffsetTimelineWatcher().Close()
-	}
-	return nil
 }

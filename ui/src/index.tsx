@@ -6,12 +6,22 @@ import App from "./App";
 import reportWebVitals from "./reportWebVitals";
 import { createTheme } from "@material-ui/core/styles";
 import { ThemeProvider } from "@mui/material";
+import { getBaseHref } from "./utils";
 
 const root = ReactDOM.createRoot(
   document.getElementById("root") as HTMLElement
 );
 
 const theme = createTheme({
+  breakpoints: {
+    values: {
+      xs: 0,
+      sm: 600,
+      md: 960,
+      lg: 1400,
+      xl: 1840,
+    },
+  },
   typography: {
     fontFamily: ["IBM Plex Sans"].join(","),
   },
@@ -20,13 +30,11 @@ const theme = createTheme({
       main: "#0077C5",
     },
   },
-
 });
-
 
 root.render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={getBaseHref()}>
       <ThemeProvider theme={theme}>
         <App />
       </ThemeProvider>

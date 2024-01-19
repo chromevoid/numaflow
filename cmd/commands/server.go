@@ -17,10 +17,15 @@ limitations under the License.
 package commands
 
 import (
-	sharedutil "github.com/numaproj/numaflow/pkg/shared/util"
-	svrcmd "github.com/numaproj/numaflow/server/cmd"
+	"strings"
 
 	"github.com/spf13/cobra"
+	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
+
+	"github.com/numaproj/numaflow/pkg/shared/logging"
+	sharedutil "github.com/numaproj/numaflow/pkg/shared/util"
+	svrcmd "github.com/numaproj/numaflow/server/cmd/server"
+	"github.com/numaproj/numaflow/server/common"
 )
 
 func NewServerCommand() *cobra.Command {
@@ -29,6 +34,9 @@ func NewServerCommand() *cobra.Command {
 		port             int
 		namespaced       bool
 		managedNamespace string
+		baseHref         string
+		disableAuth      bool
+		serverAddr       string
 	)
 
 	command := &cobra.Command{
@@ -38,12 +46,30 @@ func NewServerCommand() *cobra.Command {
 			if !cmd.Flags().Changed("port") && insecure {
 				port = 8080
 			}
-			svrcmd.Start(insecure, port, namespaced, managedNamespace)
+			if !strings.HasSuffix(baseHref, "/") {
+				baseHref = baseHref + "/"
+			}
+			opts := svrcmd.ServerOptions{
+				Insecure:         insecure,
+				Port:             port,
+				Namespaced:       namespaced,
+				ManagedNamespace: managedNamespace,
+				BaseHref:         baseHref,
+				DisableAuth:      disableAuth,
+				DexServerAddr:    common.NumaflowDexServerAddr,
+				ServerAddr:       serverAddr,
+			}
+			server := svrcmd.NewServer(opts)
+			log := logging.NewLogger().Named("server")
+			server.Start(logging.WithLogger(signals.SetupSignalHandler(), log))
 		},
 	}
-	command.Flags().BoolVar(&insecure, "insecure", false, "Whether to disable TLS, defaults to false.")
-	command.Flags().IntVarP(&port, "port", "p", 8443, "Port to listen on, defaults to 8443 or 8080 if insecure is set")
-	command.Flags().BoolVar(&namespaced, "namespaced", false, "Whether to run in namespaced scope, defaults to false.")
-	command.Flags().StringVar(&managedNamespace, "managed-namespace", sharedutil.LookupEnvStringOr("NAMESPACE", "numaflow-system"), "The namespace that the server watches when \"--namespaced\" is \"true\".")
+	command.Flags().BoolVar(&insecure, "insecure", sharedutil.LookupEnvBoolOr("NUMAFLOW_SERVER_INSECURE", false), "Whether to disable TLS, defaults to false.")
+	command.Flags().IntVarP(&port, "port", "p", sharedutil.LookupEnvIntOr("NUMAFLOW_SERVER_PORT_NUMBER", 8443), "Port to listen on, defaults to 8443 or 8080 if insecure is set")
+	command.Flags().BoolVar(&namespaced, "namespaced", sharedutil.LookupEnvBoolOr("NUMAFLOW_SERVER_NAMESPACED", false), "Whether to run in namespaced scope, defaults to false.")
+	command.Flags().StringVar(&managedNamespace, "managed-namespace", sharedutil.LookupEnvStringOr("NUMAFLOW_SERVER_MANAGED_NAMESPACE", sharedutil.LookupEnvStringOr("NAMESPACE", "numaflow-system")), "The namespace that the server watches when \"--namespaced\" is \"true\".")
+	command.Flags().StringVar(&baseHref, "base-href", sharedutil.LookupEnvStringOr("NUMAFLOW_SERVER_BASE_HREF", "/"), "Base href for Numaflow server, defaults to '/'.")
+	command.Flags().BoolVar(&disableAuth, "disable-auth", sharedutil.LookupEnvBoolOr("NUMAFLOW_SERVER_DISABLE_AUTH", false), "Whether to disable authentication and authorization, defaults to false.")
+	command.Flags().StringVar(&serverAddr, "server-addr", sharedutil.LookupEnvStringOr("NUMAFLOW_SERVER_ADDRESS", "https://localhost:8443"), "The external address of the Numaflow server.")
 	return command
 }

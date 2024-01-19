@@ -20,13 +20,13 @@ import (
 	"context"
 	"fmt"
 
-	functionsdk "github.com/numaproj/numaflow-go/pkg/function"
-	"github.com/numaproj/numaflow-go/pkg/function/server"
+	"github.com/numaproj/numaflow-go/pkg/sourcetransformer"
 	"go.uber.org/zap"
 
 	"github.com/numaproj/numaflow/pkg/shared/logging"
 	eventtime "github.com/numaproj/numaflow/pkg/sources/transformer/builtin/event_time"
 	"github.com/numaproj/numaflow/pkg/sources/transformer/builtin/filter"
+	timeextractionfilter "github.com/numaproj/numaflow/pkg/sources/transformer/builtin/time_extraction_filter"
 )
 
 type Builtin struct {
@@ -43,17 +43,19 @@ func (b *Builtin) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	server.New().RegisterMapperT(executor).Start(ctx)
+	sourcetransformer.NewServer(executor, sourcetransformer.WithMaxMessageSize(1024*1024*64)).Start(ctx)
 	return nil
 }
 
-func (b *Builtin) executor() (functionsdk.MapTFunc, error) {
+func (b *Builtin) executor() (sourcetransformer.SourceTransformFunc, error) {
 	// TODO: deal with args later
 	switch b.Name {
 	case "filter":
 		return filter.New(b.KWArgs)
 	case "eventTimeExtractor":
 		return eventtime.New(b.KWArgs)
+	case "timeExtractionFilter":
+		return timeextractionfilter.New(b.KWArgs)
 	default:
 		return nil, fmt.Errorf("unrecognized transformer %q", b.Name)
 	}

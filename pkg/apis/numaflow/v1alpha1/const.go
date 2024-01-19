@@ -38,7 +38,11 @@ const (
 	KeyPipelineName     = "numaflow.numaproj.io/pipeline-name"
 	KeyVertexName       = "numaflow.numaproj.io/vertex-name"
 	KeyReplica          = "numaflow.numaproj.io/replica"
+	KeySideInputName    = "numaflow.numaproj.io/side-input-name"
+	KeyPauseTimestamp   = "numaflow.numaproj.io/pause-timestamp"
 	KeyDefaultContainer = "kubectl.kubernetes.io/default-container"
+
+	RemovePauseTimestampPatch = `[{"op": "remove", "path": "/metadata/annotations/numaflow.numaproj.io~1pause-timestamp"}]`
 
 	// ID key in the header of sources like http
 	KeyMetaID        = "x-numaflow-id"
@@ -62,23 +66,28 @@ const (
 	JetStreamConfigMapKey                = "nats-js"              // key for nats-js.conf in the configmap
 
 	// container names.
-	CtrInit          = "init"
-	CtrMain          = "numa"
-	CtrUdf           = "udf"
-	CtrUdsink        = "udsink"
-	CtrUdtransformer = "transformer"
+	CtrInit              = "init"
+	CtrMain              = "numa"
+	CtrUdf               = "udf"
+	CtrUdsink            = "udsink"
+	CtrUdsource          = "udsource"
+	CtrUdtransformer     = "transformer"
+	CtrUdSideInput       = "udsi"
+	CtrInitSideInputs    = "init-side-inputs"
+	CtrSideInputsWatcher = "side-inputs-synchronizer"
 
 	// components
-	ComponentISBSvc = "isbsvc"
-	ComponentDaemon = "daemon"
-	ComponentVertex = "vertex"
-	ComponentJob    = "job"
+	ComponentISBSvc           = "isbsvc"
+	ComponentDaemon           = "daemon"
+	ComponentVertex           = "vertex"
+	ComponentJob              = "job"
+	ComponentSideInputManager = "side-inputs-manager"
+	ComponentUXServer         = "numaflow-ux"
 
 	// controllers
 	ControllerISBSvc   = "isbsvc-controller"
 	ControllerPipeline = "pipeline-controller"
 	ControllerVertex   = "vertex-controller"
-	ControllerWatchdog = "watchdog"
 
 	// ENV vars
 	EnvNamespace                      = "NUMAFLOW_NAMESPACE"
@@ -88,6 +97,7 @@ const (
 	EnvReplica                        = "NUMAFLOW_REPLICA"
 	EnvVertexObject                   = "NUMAFLOW_VERTEX_OBJECT"
 	EnvPipelineObject                 = "NUMAFLOW_PIPELINE_OBJECT"
+	EnvSideInputObject                = "NUMAFLOW_SIDE_INPUT_OBJECT"
 	EnvImage                          = "NUMAFLOW_IMAGE"
 	EnvImagePullPolicy                = "NUMAFLOW_IMAGE_PULL_POLICY"
 	EnvISBSvcRedisSentinelURL         = "NUMAFLOW_ISBSVC_REDIS_SENTINEL_URL"
@@ -111,6 +121,7 @@ const (
 	EnvCPULimit                       = "NUMAFLOW_CPU_LIMIT"
 	EnvMemoryRequest                  = "NUMAFLOW_MEMORY_REQUEST"
 	EnvMemoryLimit                    = "NUMAFLOW_MEMORY_LIMIT"
+	EnvGoDebug                        = "GODEBUG"
 
 	PathVarRun            = "/var/run/numaflow"
 	VertexMetricsPort     = 2469
@@ -121,15 +132,17 @@ const (
 
 	DefaultRequeueAfter = 10 * time.Second
 
+	PathSideInputsMount = "/var/numaflow/side-inputs"
+
 	// ISB
 	DefaultBufferLength     = 30000
 	DefaultBufferUsageLimit = 0.8
 	DefaultReadBatchSize    = 500
 
 	// Auto scaling
-	DefaultLookbackSeconds          = 180 // Default lookback seconds for calculating avg rate and pending
+	DefaultLookbackSeconds          = 120 // Default lookback seconds for calculating avg rate and pending
 	DefaultCooldownSeconds          = 90  // Default cooldown seconds after a scaling operation
-	DefaultZeroReplicaSleepSeconds  = 180 // Default sleep time in seconds after scaling down to 0, before peeking
+	DefaultZeroReplicaSleepSeconds  = 120 // Default sleep time in seconds after scaling down to 0, before peeking
 	DefaultMaxReplicas              = 50  // Default max replicas
 	DefaultTargetProcessingSeconds  = 20  // Default targeted time in seconds to finish processing all the pending messages for a source
 	DefaultTargetBufferAvailability = 50  // Default targeted percentage of buffer availability
@@ -151,8 +164,17 @@ const (
 	// DefaultKeyForNonKeyedData Default key for non keyed stream
 	DefaultKeyForNonKeyedData = "NON_KEYED_STREAM"
 
-	// Default gRPC max message size
-	DefaultGRPCMaxMessageSize = 20 * 1024 * 1024
+	// UDF map streaming
+	MapUdfStreamKey = "numaflow.numaproj.io/map-stream"
+
+	// Pipeline health status
+	PipelineStatusHealthy   = "healthy"
+	PipelineStatusUnknown   = "unknown"
+	PipelineStatusCritical  = "critical"
+	PipelineStatusWarning   = "warning"
+	PipelineStatusInactive  = "inactive"
+	PipelineStatusDeleting  = "deleting"
+	PipelineStatusUnhealthy = "unhealthy"
 )
 
 var (

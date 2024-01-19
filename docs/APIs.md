@@ -23,7 +23,9 @@ AbstractPodTemplate
 <a href="#numaflow.numaproj.io/v1alpha1.DaemonTemplate">DaemonTemplate</a>,
 <a href="#numaflow.numaproj.io/v1alpha1.JetStreamBufferService">JetStreamBufferService</a>,
 <a href="#numaflow.numaproj.io/v1alpha1.JobTemplate">JobTemplate</a>,
-<a href="#numaflow.numaproj.io/v1alpha1.NativeRedis">NativeRedis</a>)
+<a href="#numaflow.numaproj.io/v1alpha1.NativeRedis">NativeRedis</a>,
+<a href="#numaflow.numaproj.io/v1alpha1.SideInputsManagerTemplate">SideInputsManagerTemplate</a>,
+<a href="#numaflow.numaproj.io/v1alpha1.VertexTemplate">VertexTemplate</a>)
 </p>
 <p>
 <p>
@@ -298,6 +300,9 @@ ContainerTemplate </a> </em>
 </td>
 <td>
 <em>(Optional)</em>
+<p>
+Container template for the main numa container.
+</p>
 </td>
 </tr>
 <tr>
@@ -308,6 +313,10 @@ ContainerTemplate </a> </em>
 </td>
 <td>
 <em>(Optional)</em>
+<p>
+Container template for all the vertex pod init containers spawned by
+numaflow, excluding the ones specified by the user.
+</p>
 </td>
 </tr>
 <tr>
@@ -369,7 +378,7 @@ Settings for autoscaling
 <td>
 <em>(Optional)</em>
 <p>
-List of init containers belonging to the pod. More info:
+List of customized init containers belonging to the pod. More info:
 <a href="https://kubernetes.io/docs/concepts/workloads/pods/init-containers/">https://kubernetes.io/docs/concepts/workloads/pods/init-containers/</a>
 </p>
 </td>
@@ -383,7 +392,43 @@ List of init containers belonging to the pod. More info:
 <td>
 <em>(Optional)</em>
 <p>
-List of sidecar containers belonging to the pod.
+List of customized sidecar containers belonging to the pod.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>partitions</code></br> <em> int32 </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Number of partitions of the vertex owned buffers. It applies to udf and
+sink vertices only.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>sideInputs</code></br> <em> \[\]string </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Names of the side inputs used in this vertex.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>sideInputsContainerTemplate</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.ContainerTemplate">
+ContainerTemplate </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Container template for the side inputs watcher container.
 </p>
 </td>
 </tr>
@@ -491,41 +536,6 @@ Blackhole
 Blackhole is a sink to emulate /dev/null
 </p>
 </p>
-<h3 id="numaflow.numaproj.io/v1alpha1.Buffer">
-Buffer
-</h3>
-<p>
-</p>
-<table>
-<thead>
-<tr>
-<th>
-Field
-</th>
-<th>
-Description
-</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>
-<code>Name</code></br> <em> string </em>
-</td>
-<td>
-</td>
-</tr>
-<tr>
-<td>
-<code>Type</code></br> <em>
-<a href="#numaflow.numaproj.io/v1alpha1.BufferType"> BufferType </a>
-</em>
-</td>
-<td>
-</td>
-</tr>
-</tbody>
-</table>
 <h3 id="numaflow.numaproj.io/v1alpha1.BufferFullWritingStrategy">
 BufferFullWritingStrategy (<code>string</code> alias)
 </p>
@@ -577,16 +587,116 @@ JetStreamConfig </a> </em>
 </tr>
 </tbody>
 </table>
-<h3 id="numaflow.numaproj.io/v1alpha1.BufferType">
-BufferType (<code>string</code> alias)
-</p>
+<h3 id="numaflow.numaproj.io/v1alpha1.CombinedEdge">
+CombinedEdge
 </h3>
 <p>
 (<em>Appears on:</em>
-<a href="#numaflow.numaproj.io/v1alpha1.Buffer">Buffer</a>)
+<a href="#numaflow.numaproj.io/v1alpha1.VertexSpec">VertexSpec</a>)
 </p>
 <p>
+<p>
+CombinedEdge is a combination of Edge and some other properties such as
+vertex type, partitions, limits. It’s used to decorate the fromEdges and
+toEdges of the generated Vertex objects, so that in the vertex pod, it
+knows the properties of the connected vertices, for example, how many
+partitioned buffers I should write to, what is the write buffer length,
+etc.
 </p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>Edge</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.Edge"> Edge </a> </em>
+</td>
+<td>
+<p>
+(Members of <code>Edge</code> are embedded into this type.)
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>fromVertexType</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.VertexType"> VertexType </a>
+</em>
+</td>
+<td>
+<p>
+From vertex type.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>fromVertexPartitionCount</code></br> <em> int32 </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+The number of partitions of the from vertex, if not provided, the
+default value is set to “1”.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>fromVertexLimits</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.VertexLimits"> VertexLimits </a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+<tr>
+<td>
+<code>toVertexType</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.VertexType"> VertexType </a>
+</em>
+</td>
+<td>
+<p>
+To vertex type.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>toVertexPartitionCount</code></br> <em> int32 </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+The number of partitions of the to vertex, if not provided, the default
+value is set to “1”.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>toVertexLimits</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.VertexLimits"> VertexLimits </a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="numaflow.numaproj.io/v1alpha1.ConditionType">
 ConditionType (<code>string</code> alias)
 </p>
@@ -601,8 +711,10 @@ Container
 </h3>
 <p>
 (<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.SideInput">SideInput</a>,
 <a href="#numaflow.numaproj.io/v1alpha1.UDF">UDF</a>,
 <a href="#numaflow.numaproj.io/v1alpha1.UDSink">UDSink</a>,
+<a href="#numaflow.numaproj.io/v1alpha1.UDSource">UDSource</a>,
 <a href="#numaflow.numaproj.io/v1alpha1.UDTransformer">UDTransformer</a>)
 </p>
 <p>
@@ -718,7 +830,9 @@ ContainerTemplate
 <a href="#numaflow.numaproj.io/v1alpha1.DaemonTemplate">DaemonTemplate</a>,
 <a href="#numaflow.numaproj.io/v1alpha1.JetStreamBufferService">JetStreamBufferService</a>,
 <a href="#numaflow.numaproj.io/v1alpha1.JobTemplate">JobTemplate</a>,
-<a href="#numaflow.numaproj.io/v1alpha1.NativeRedis">NativeRedis</a>)
+<a href="#numaflow.numaproj.io/v1alpha1.NativeRedis">NativeRedis</a>,
+<a href="#numaflow.numaproj.io/v1alpha1.SideInputsManagerTemplate">SideInputsManagerTemplate</a>,
+<a href="#numaflow.numaproj.io/v1alpha1.VertexTemplate">VertexTemplate</a>)
 </p>
 <p>
 <p>
@@ -865,8 +979,8 @@ Edge
 </h3>
 <p>
 (<em>Appears on:</em>
-<a href="#numaflow.numaproj.io/v1alpha1.PipelineSpec">PipelineSpec</a>,
-<a href="#numaflow.numaproj.io/v1alpha1.VertexSpec">VertexSpec</a>)
+<a href="#numaflow.numaproj.io/v1alpha1.CombinedEdge">CombinedEdge</a>,
+<a href="#numaflow.numaproj.io/v1alpha1.PipelineSpec">PipelineSpec</a>)
 </p>
 <p>
 </p>
@@ -911,33 +1025,6 @@ Conditional forwarding, only allowed when “From” is a Sink or UDF.
 </tr>
 <tr>
 <td>
-<code>limits</code></br> <em>
-<a href="#numaflow.numaproj.io/v1alpha1.EdgeLimits"> EdgeLimits </a>
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>
-Limits define the limitations such as buffer read batch size for the
-edge, will override pipeline level settings.
-</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>parallelism</code></br> <em> int32 </em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>
-Parallelism is only effective when the “to” vertex is a reduce vertex,
-if it’s not provided, the default value is set to “1”. Parallelism is
-ignored when the “to” vertex is not a reduce vertex.
-</p>
-</td>
-</tr>
-<tr>
-<td>
 <code>onFull</code></br> <em>
 <a href="#numaflow.numaproj.io/v1alpha1.BufferFullWritingStrategy">
 BufferFullWritingStrategy </a> </em>
@@ -949,54 +1036,6 @@ OnFull specifies the behaviour for the write actions when the inter step
 buffer is full. There are currently two options, retryUntilSuccess and
 discardLatest. if not provided, the default value is set to
 “retryUntilSuccess”
-</p>
-</td>
-</tr>
-</tbody>
-</table>
-<h3 id="numaflow.numaproj.io/v1alpha1.EdgeLimits">
-EdgeLimits
-</h3>
-<p>
-(<em>Appears on:</em>
-<a href="#numaflow.numaproj.io/v1alpha1.Edge">Edge</a>)
-</p>
-<p>
-</p>
-<table>
-<thead>
-<tr>
-<th>
-Field
-</th>
-<th>
-Description
-</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>
-<code>bufferMaxLength</code></br> <em> uint64 </em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>
-BufferMaxLength is used to define the max length of a buffer. It
-overrides the settings from pipeline limits.
-</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>bufferUsageLimit</code></br> <em> uint32 </em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>
-BufferUsageLimit is used to define the percentage of the buffer usage
-limit, a valid value should be less than 100, for example, 85. It
-overrides the settings from pipeline limits.
 </p>
 </td>
 </tr>
@@ -1033,6 +1072,20 @@ Description
 Kubernetes meta/v1.Duration </a> </em>
 </td>
 <td>
+<p>
+Length is the duration of the fixed window.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>streaming</code></br> <em> bool </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Streaming should be set to true if the reduce udf is streaming.
+</p>
 </td>
 </tr>
 </tbody>
@@ -1277,6 +1330,7 @@ Size of each generated message
 <code>keyCount</code></br> <em> int32 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>
 KeyCount is the number of unique keys in the payload
 </p>
@@ -1287,8 +1341,25 @@ KeyCount is the number of unique keys in the payload
 <code>value</code></br> <em> uint64 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>
 Value is an optional uint64 value to be written in to the payload
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>jitter</code></br> <em>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
+Kubernetes meta/v1.Duration </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Jitter is the jitter for the message generation, used to simulate out of
+order messages for example if the jitter is 10s, then the message’s
+event time will be delayed by a random time between 0 and 10s which will
+result in the message being out of order by 0 to 10s
 </p>
 </td>
 </tr>
@@ -1682,6 +1753,59 @@ Description
 </tr>
 </tbody>
 </table>
+<h3 id="numaflow.numaproj.io/v1alpha1.GetSideInputDeploymentReq">
+GetSideInputDeploymentReq
+</h3>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>ISBSvcType</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.ISBSvcType"> ISBSvcType </a>
+</em>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<code>Image</code></br> <em> string </em>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<code>PullPolicy</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#pullpolicy-v1-core">
+Kubernetes core/v1.PullPolicy </a> </em>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<code>Env</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#envvar-v1-core">
+\[\]Kubernetes core/v1.EnvVar </a> </em>
+</td>
+<td>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="numaflow.numaproj.io/v1alpha1.GetVertexPodSpecReq">
 GetVertexPodSpecReq
 </h3>
@@ -1729,6 +1853,13 @@ Kubernetes core/v1.PullPolicy </a> </em>
 <code>Env</code></br> <em>
 <a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#envvar-v1-core">
 \[\]Kubernetes core/v1.EnvVar </a> </em>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<code>SideInputsStoreName</code></br> <em> string </em>
 </td>
 <td>
 </td>
@@ -1868,11 +1999,79 @@ ISBSvcType (<code>string</code> alias)
 <p>
 (<em>Appears on:</em>
 <a href="#numaflow.numaproj.io/v1alpha1.GetDaemonDeploymentReq">GetDaemonDeploymentReq</a>,
+<a href="#numaflow.numaproj.io/v1alpha1.GetSideInputDeploymentReq">GetSideInputDeploymentReq</a>,
 <a href="#numaflow.numaproj.io/v1alpha1.GetVertexPodSpecReq">GetVertexPodSpecReq</a>,
 <a href="#numaflow.numaproj.io/v1alpha1.InterStepBufferServiceStatus">InterStepBufferServiceStatus</a>)
 </p>
 <p>
 </p>
+<h3 id="numaflow.numaproj.io/v1alpha1.IdleSource">
+IdleSource
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.Watermark">Watermark</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>threshold</code></br> <em>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
+Kubernetes meta/v1.Duration </a> </em>
+</td>
+<td>
+<p>
+Threshold is the duration after which a source is marked as Idle due to
+lack of data. Ex: If watermark found to be idle after the Threshold
+duration then the watermark is progressed by <code>IncrementBy</code>.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>stepInterval</code></br> <em>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
+Kubernetes meta/v1.Duration </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+StepInterval is the duration between the subsequent increment of the
+watermark as long the source remains Idle. The default value is 0s which
+means that once we detect idle source, we will be incrementing the
+watermark by <code>IncrementBy</code> for time we detect that we source
+is empty (in other words, this will be a very frequent update).
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>incrementBy</code></br> <em>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
+Kubernetes meta/v1.Duration </a> </em>
+</td>
+<td>
+<p>
+IncrementBy is the duration to be added to the current watermark to
+progress the watermark when source is idling.
+</p>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="numaflow.numaproj.io/v1alpha1.InterStepBufferService">
 InterStepBufferService
 </h3>
@@ -2164,11 +2363,16 @@ type.)
 <td>
 <em>(Optional)</em>
 <p>
-JetStream configuration, if not specified, global settings in
+Nats/JetStream configuration, if not specified, global settings in
 numaflow-controller-config will be used. See
+<a href="https://docs.nats.io/running-a-nats-service/configuration#limits">https://docs.nats.io/running-a-nats-service/configuration#limits</a>
+and
 <a href="https://docs.nats.io/running-a-nats-service/configuration#jetstream">https://docs.nats.io/running-a-nats-service/configuration#jetstream</a>.
-Only configure “max_memory_store” or “max_file_store”, do not set
-“store_dir” as it has been hardcoded.
+For limits, only “max_payload” is supported for configuration, defaults
+to 1048576 (1MB), not recommended to use values over 8388608 (8MB) but
+max_payload can be set up to 67108864 (64MB). For jetstream, only
+“max_memory_store” and “max_file_store” are supported for configuration,
+do not set “store_dir” as it has been hardcoded.
 </p>
 </td>
 </tr>
@@ -2278,7 +2482,7 @@ JetStream (NATS) URL
 </tr>
 <tr>
 <td>
-<code>bufferConfig</code></br> <em> string </em>
+<code>streamConfig</code></br> <em> string </em>
 </td>
 <td>
 <em>(Optional)</em>
@@ -2580,6 +2784,17 @@ DeleteGracePeriodSeconds used to delete pipeline gracefully
 <p>
 DesiredPhase used to bring the pipeline from current phase to desired
 phase
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>pauseGracePeriodSeconds</code></br> <em> int32 </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+PauseGracePeriodSeconds used to pause pipeline gracefully
 </p>
 </td>
 </tr>
@@ -3137,8 +3352,21 @@ Watermark enables watermark progression across the entire pipeline.
 <td>
 <em>(Optional)</em>
 <p>
-Templates is used to customize additional kubernetes resources required
+Templates are used to customize additional kubernetes resources required
 for the Pipeline
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>sideInputs</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.SideInput"> \[\]SideInput </a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+SideInputs defines the Side Inputs of a pipeline.
 </p>
 </td>
 </tr>
@@ -3186,7 +3414,7 @@ Description
 <em>(Optional)</em>
 <p>
 Read batch size for all the vertices in the pipeline, can be overridden
-by the vertex’s limit settings
+by the vertex’s limit settings.
 </p>
 </td>
 </tr>
@@ -3197,7 +3425,7 @@ by the vertex’s limit settings
 <td>
 <em>(Optional)</em>
 <p>
-BufferMaxLength is used to define the max length of a buffer Only
+BufferMaxLength is used to define the max length of a buffer. Only
 applies to UDF and Source vertices as only they do buffer write. It can
 be overridden by the settings in vertex limits.
 </p>
@@ -3340,8 +3568,21 @@ Watermark enables watermark progression across the entire pipeline.
 <td>
 <em>(Optional)</em>
 <p>
-Templates is used to customize additional kubernetes resources required
+Templates are used to customize additional kubernetes resources required
 for the Pipeline
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>sideInputs</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.SideInput"> \[\]SideInput </a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+SideInputs defines the Side Inputs of a pipeline.
 </p>
 </td>
 </tr>
@@ -3487,8 +3728,7 @@ RedisConfig
 <p>
 (<em>Appears on:</em>
 <a href="#numaflow.numaproj.io/v1alpha1.BufferServiceConfig">BufferServiceConfig</a>,
-<a href="#numaflow.numaproj.io/v1alpha1.RedisBufferService">RedisBufferService</a>,
-<a href="#numaflow.numaproj.io/v1alpha1.RedisStreamsSource">RedisStreamsSource</a>)
+<a href="#numaflow.numaproj.io/v1alpha1.RedisBufferService">RedisBufferService</a>)
 </p>
 <p>
 </p>
@@ -3643,78 +3883,6 @@ settings from controller config
 Sentinel settings, will override the global settings from controller
 config
 </p>
-</td>
-</tr>
-</tbody>
-</table>
-<h3 id="numaflow.numaproj.io/v1alpha1.RedisStreamsSource">
-RedisStreamsSource
-</h3>
-<p>
-(<em>Appears on:</em>
-<a href="#numaflow.numaproj.io/v1alpha1.Source">Source</a>)
-</p>
-<p>
-</p>
-<table>
-<thead>
-<tr>
-<th>
-Field
-</th>
-<th>
-Description
-</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>
-<code>RedisConfig</code></br> <em>
-<a href="#numaflow.numaproj.io/v1alpha1.RedisConfig"> RedisConfig </a>
-</em>
-</td>
-<td>
-<p>
-(Members of <code>RedisConfig</code> are embedded into this type.)
-</p>
-<p>
-RedisConfig contains connectivity info
-</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>stream</code></br> <em> string </em>
-</td>
-<td>
-</td>
-</tr>
-<tr>
-<td>
-<code>consumerGroup</code></br> <em> string </em>
-</td>
-<td>
-</td>
-</tr>
-<tr>
-<td>
-<code>readFromBeginning</code></br> <em> bool </em>
-</td>
-<td>
-<p>
-if true, stream starts being read from the beginning; otherwise, the
-latest
-</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>tls</code></br> <em> <a href="#numaflow.numaproj.io/v1alpha1.TLS">
-TLS </a> </em>
-</td>
-<td>
-<em>(Optional)</em>
 </td>
 </tr>
 </tbody>
@@ -3923,7 +4091,8 @@ processing rate.
 <td>
 <em>(Optional)</em>
 <p>
-Cooldown seconds after a scaling operation before another one.
+Deprecated: Use scaleUpCooldownSeconds and scaleDownCooldownSeconds
+instead. Cooldown seconds after a scaling operation before another one.
 </p>
 </td>
 </tr>
@@ -3934,8 +4103,8 @@ Cooldown seconds after a scaling operation before another one.
 <td>
 <em>(Optional)</em>
 <p>
-After scaling down to 0, sleep how many seconds before scaling up to
-peek.
+After scaling down the source vertex to 0, sleep how many seconds before
+scaling the source vertex back up to peek.
 </p>
 </td>
 </tr>
@@ -3956,17 +4125,16 @@ only effective for source vertices.
 </tr>
 <tr>
 <td>
-<code>targetBufferUsage</code></br> <em> uint32 </em>
+<code>targetBufferAvailability</code></br> <em> uint32 </em>
 </td>
 <td>
 <em>(Optional)</em>
 <p>
-TargetBufferUsage is used to define the target percentage of the buffer
-availability. A valid and meaningful value should be less than the
-BufferUsageLimit defined in the Edge spec (or Pipeline spec), for
+TargetBufferAvailability is used to define the target percentage of the
+buffer availability. A valid and meaningful value should be less than
+the BufferUsageLimit defined in the Edge spec (or Pipeline spec), for
 example, 50. It only applies to UDF and Sink vertices because only they
-have buffers to read. Deprecated: use targetBufferAvailability instead.
-Will be removed in v0.9
+have buffers to read.
 </p>
 </td>
 </tr>
@@ -3984,16 +4152,232 @@ once. The is use to prevent too aggressive scaling operations
 </tr>
 <tr>
 <td>
-<code>targetBufferAvailability</code></br> <em> uint32 </em>
+<code>scaleUpCooldownSeconds</code></br> <em> uint32 </em>
 </td>
 <td>
 <em>(Optional)</em>
 <p>
-TargetBufferAvailability is used to define the target percentage of the
-buffer availability. A valid and meaningful value should be less than
-the BufferUsageLimit defined in the Edge spec (or Pipeline spec), for
-example, 50. It only applies to UDF and Sink vertices because only they
-have buffers to read.
+ScaleUpCooldownSeconds defines the cooldown seconds after a scaling
+operation, before a follow-up scaling up. It defaults to the
+CooldownSeconds if not set.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>scaleDownCooldownSeconds</code></br> <em> uint32 </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+ScaleDownCooldownSeconds defines the cooldown seconds after a scaling
+operation, before a follow-up scaling down. It defaults to the
+CooldownSeconds if not set.
+</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="numaflow.numaproj.io/v1alpha1.SessionWindow">
+SessionWindow
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.Window">Window</a>)
+</p>
+<p>
+<p>
+SessionWindow describes a session window
+</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>timeout</code></br> <em>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
+Kubernetes meta/v1.Duration </a> </em>
+</td>
+<td>
+<p>
+Timeout is the duration of inactivity after which a session window
+closes.
+</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="numaflow.numaproj.io/v1alpha1.SideInput">
+SideInput
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.PipelineSpec">PipelineSpec</a>)
+</p>
+<p>
+<p>
+SideInput defines information of a Side Input
+</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>name</code></br> <em> string </em>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<code>container</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.Container"> Container </a> </em>
+</td>
+<td>
+</td>
+</tr>
+<tr>
+<td>
+<code>volumes</code></br> <em>
+<a href="https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#volume-v1-core">
+\[\]Kubernetes core/v1.Volume </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+<tr>
+<td>
+<code>trigger</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.SideInputTrigger">
+SideInputTrigger </a> </em>
+</td>
+<td>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="numaflow.numaproj.io/v1alpha1.SideInputTrigger">
+SideInputTrigger
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.SideInput">SideInput</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>schedule</code></br> <em> string </em>
+</td>
+<td>
+<p>
+The schedule to trigger the retrievement of the side input data. It
+supports cron format, for example, “0 30 \* \* \* \*”. Or interval based
+format, such as “@hourly&rdquo;, “@every 1h30m”, etc.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>timezone</code></br> <em> string </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="numaflow.numaproj.io/v1alpha1.SideInputsManagerTemplate">
+SideInputsManagerTemplate
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.Templates">Templates</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>AbstractPodTemplate</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.AbstractPodTemplate">
+AbstractPodTemplate </a> </em>
+</td>
+<td>
+<p>
+(Members of <code>AbstractPodTemplate</code> are embedded into this
+type.)
+</p>
+<em>(Optional)</em>
+</td>
+</tr>
+<tr>
+<td>
+<code>containerTemplate</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.ContainerTemplate">
+ContainerTemplate </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Template for the side inputs manager numa container
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>initContainerTemplate</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.ContainerTemplate">
+ContainerTemplate </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Template for the side inputs manager init container
 </p>
 </td>
 </tr>
@@ -4085,6 +4469,9 @@ Description
 Kubernetes meta/v1.Duration </a> </em>
 </td>
 <td>
+<p>
+Length is the duration of the sliding window.
+</p>
 </td>
 </tr>
 <tr>
@@ -4094,6 +4481,21 @@ Kubernetes meta/v1.Duration </a> </em>
 Kubernetes meta/v1.Duration </a> </em>
 </td>
 <td>
+<p>
+Slide is the slide parameter that controls the frequency at which the
+sliding window is created.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>streaming</code></br> <em> bool </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Streaming should be set to true if the reduce udf is streaming.
+</p>
 </td>
 </tr>
 </tbody>
@@ -4161,9 +4563,9 @@ GeneratorSource </a> </em>
 </tr>
 <tr>
 <td>
-<code>redisStreams</code></br> <em>
-<a href="#numaflow.numaproj.io/v1alpha1.RedisStreamsSource">
-RedisStreamsSource </a> </em>
+<code>transformer</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.UDTransformer"> UDTransformer
+</a> </em>
 </td>
 <td>
 <em>(Optional)</em>
@@ -4171,9 +4573,8 @@ RedisStreamsSource </a> </em>
 </tr>
 <tr>
 <td>
-<code>transformer</code></br> <em>
-<a href="#numaflow.numaproj.io/v1alpha1.UDTransformer"> UDTransformer
-</a> </em>
+<code>udsource</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.UDSource"> UDSource </a> </em>
 </td>
 <td>
 <em>(Optional)</em>
@@ -4229,8 +4630,7 @@ TLS
 (<em>Appears on:</em>
 <a href="#numaflow.numaproj.io/v1alpha1.KafkaSink">KafkaSink</a>,
 <a href="#numaflow.numaproj.io/v1alpha1.KafkaSource">KafkaSource</a>,
-<a href="#numaflow.numaproj.io/v1alpha1.NatsSource">NatsSource</a>,
-<a href="#numaflow.numaproj.io/v1alpha1.RedisStreamsSource">RedisStreamsSource</a>)
+<a href="#numaflow.numaproj.io/v1alpha1.NatsSource">NatsSource</a>)
 </p>
 <p>
 </p>
@@ -4372,7 +4772,7 @@ Description
 <td>
 <em>(Optional)</em>
 <p>
-DaemonTemplate is used to customize the Daemon Deployment
+DaemonTemplate is used to customize the Daemon Deployment.
 </p>
 </td>
 </tr>
@@ -4385,7 +4785,33 @@ DaemonTemplate is used to customize the Daemon Deployment
 <td>
 <em>(Optional)</em>
 <p>
-JobTemplate is used to customize Jobs
+JobTemplate is used to customize Jobs.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>sideInputsManager</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.SideInputsManagerTemplate">
+SideInputsManagerTemplate </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+SideInputsManagerTemplate is used to customize the Side Inputs Manager.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>vertex</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.VertexTemplate"> VertexTemplate
+</a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+VertexTemplate is used to customize the vertices of the pipeline.
 </p>
 </td>
 </tr>
@@ -4493,6 +4919,37 @@ UDSink
 <p>
 (<em>Appears on:</em>
 <a href="#numaflow.numaproj.io/v1alpha1.Sink">Sink</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>container</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.Container"> Container </a> </em>
+</td>
+<td>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="numaflow.numaproj.io/v1alpha1.UDSource">
+UDSource
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.Source">Source</a>)
 </p>
 <p>
 </p>
@@ -4639,7 +5096,8 @@ Refer to the Kubernetes API documentation for the fields of the
 <tr>
 <td>
 <code>fromEdges</code></br> <em>
-<a href="#numaflow.numaproj.io/v1alpha1.Edge"> \[\]Edge </a> </em>
+<a href="#numaflow.numaproj.io/v1alpha1.CombinedEdge"> \[\]CombinedEdge
+</a> </em>
 </td>
 <td>
 <em>(Optional)</em>
@@ -4648,7 +5106,8 @@ Refer to the Kubernetes API documentation for the fields of the
 <tr>
 <td>
 <code>toEdges</code></br> <em>
-<a href="#numaflow.numaproj.io/v1alpha1.Edge"> \[\]Edge </a> </em>
+<a href="#numaflow.numaproj.io/v1alpha1.CombinedEdge"> \[\]CombinedEdge
+</a> </em>
 </td>
 <td>
 <em>(Optional)</em>
@@ -4733,7 +5192,8 @@ VertexLimits
 </h3>
 <p>
 (<em>Appears on:</em>
-<a href="#numaflow.numaproj.io/v1alpha1.AbstractVertex">AbstractVertex</a>)
+<a href="#numaflow.numaproj.io/v1alpha1.AbstractVertex">AbstractVertex</a>,
+<a href="#numaflow.numaproj.io/v1alpha1.CombinedEdge">CombinedEdge</a>)
 </p>
 <p>
 </p>
@@ -4772,6 +5232,31 @@ Kubernetes meta/v1.Duration </a> </em>
 <p>
 Read timeout duration from the source or buffer It overrides the
 settings from pipeline limits.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>bufferMaxLength</code></br> <em> uint64 </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+BufferMaxLength is used to define the max length of a buffer. It
+overrides the settings from pipeline limits.
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>bufferUsageLimit</code></br> <em> uint32 </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+BufferUsageLimit is used to define the percentage of the buffer usage
+limit, a valid value should be less than 100, for example, 85. It
+overrides the settings from pipeline limits.
 </p>
 </td>
 </tr>
@@ -4846,7 +5331,8 @@ Description
 <tr>
 <td>
 <code>fromEdges</code></br> <em>
-<a href="#numaflow.numaproj.io/v1alpha1.Edge"> \[\]Edge </a> </em>
+<a href="#numaflow.numaproj.io/v1alpha1.CombinedEdge"> \[\]CombinedEdge
+</a> </em>
 </td>
 <td>
 <em>(Optional)</em>
@@ -4855,7 +5341,8 @@ Description
 <tr>
 <td>
 <code>toEdges</code></br> <em>
-<a href="#numaflow.numaproj.io/v1alpha1.Edge"> \[\]Edge </a> </em>
+<a href="#numaflow.numaproj.io/v1alpha1.CombinedEdge"> \[\]CombinedEdge
+</a> </em>
 </td>
 <td>
 <em>(Optional)</em>
@@ -4945,10 +5432,77 @@ Kubernetes meta/v1.Time </a> </em>
 </tr>
 </tbody>
 </table>
+<h3 id="numaflow.numaproj.io/v1alpha1.VertexTemplate">
+VertexTemplate
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.Templates">Templates</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>
+Field
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>AbstractPodTemplate</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.AbstractPodTemplate">
+AbstractPodTemplate </a> </em>
+</td>
+<td>
+<p>
+(Members of <code>AbstractPodTemplate</code> are embedded into this
+type.)
+</p>
+<em>(Optional)</em>
+</td>
+</tr>
+<tr>
+<td>
+<code>containerTemplate</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.ContainerTemplate">
+ContainerTemplate </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Template for the vertex numa container
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>initContainerTemplate</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.ContainerTemplate">
+ContainerTemplate </a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+Template for the vertex init container
+</p>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="numaflow.numaproj.io/v1alpha1.VertexType">
 VertexType (<code>string</code> alias)
 </p>
 </h3>
+<p>
+(<em>Appears on:</em>
+<a href="#numaflow.numaproj.io/v1alpha1.CombinedEdge">CombinedEdge</a>)
+</p>
 <p>
 </p>
 <h3 id="numaflow.numaproj.io/v1alpha1.Watermark">
@@ -4998,6 +5552,20 @@ means no delay.
 </p>
 </td>
 </tr>
+<tr>
+<td>
+<code>idleSource</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.IdleSource"> IdleSource </a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>
+IdleSource defines the idle watermark properties, it could be configured
+in case source is idling.
+</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="numaflow.numaproj.io/v1alpha1.Window">
@@ -5038,6 +5606,16 @@ Description
 <td>
 <code>sliding</code></br> <em>
 <a href="#numaflow.numaproj.io/v1alpha1.SlidingWindow"> SlidingWindow
+</a> </em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+<tr>
+<td>
+<code>session</code></br> <em>
+<a href="#numaflow.numaproj.io/v1alpha1.SessionWindow"> SessionWindow
 </a> </em>
 </td>
 <td>

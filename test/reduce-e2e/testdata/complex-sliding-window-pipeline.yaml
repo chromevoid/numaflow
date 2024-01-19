@@ -16,13 +16,14 @@ spec:
         min: 1
       udf:
         container:
-          # Tell the input number is even or odd, see https://github.com/numaproj/numaflow-go/tree/main/pkg/function/examples/evenodd
-          image: quay.io/numaio/numaflow-go/map-even-odd
+          # Tell the input number is even or odd, see https://github.com/numaproj/numaflow-go/tree/main/pkg/mapper/examples/even_odd
+          image: quay.io/numaio/numaflow-go/map-even-odd:v0.6.0
     - name: keyed-fixed-sum
+      partitions: 2
       udf:
         container:
-          # compute the sum
-          image: quay.io/numaio/numaflow-go/reduce-sum
+          # Compute the sum, see https://github.com/numaproj/numaflow-go/tree/main/pkg/reducer/examples/sum
+          image: quay.io/numaio/numaflow-go/reduce-sum:v0.6.1
         groupBy:
           window:
             fixed:
@@ -33,8 +34,8 @@ spec:
     - name: non-keyed-fixed-sum
       udf:
         container:
-          # compute the sum
-          image: quay.io/numaio/numaflow-go/reduce-sum
+          # Compute the sum, see https://github.com/numaproj/numaflow-go/tree/main/pkg/reducer/examples/sum
+          image: quay.io/numaio/numaflow-go/reduce-sum:v0.6.1
         groupBy:
           window:
             fixed:
@@ -45,8 +46,8 @@ spec:
     - name: non-keyed-sliding-sum
       udf:
         container:
-          # compute the sum
-          image: quay.io/numaio/numaflow-go/reduce-sum
+          # Compute the sum, see https://github.com/numaproj/numaflow-go/tree/main/pkg/reducer/examples/sum
+          image: quay.io/numaio/numaflow-go/reduce-sum:v0.6.1
         groupBy:
           window:
             sliding:
@@ -61,14 +62,13 @@ spec:
       sink:
         udsink:
           container:
-            image: quay.io/numaio/numaflow-sink/redis-e2e-test-sink:latest
+            # A redis sink for e2e testing, see https://github.com/numaproj/numaflow-sinks/tree/main/redis-e2e-test-sink
+            image: quay.io/numaio/numaflow-sink/redis-e2e-test-sink:v0.5.0
   edges:
     - from: in
       to: atoi
     - from: atoi
       to: keyed-fixed-sum
-      # FIXME: use parallelism of 2 after we implement reduce watermark
-      parallelism: 1
     - from: keyed-fixed-sum
       to: non-keyed-fixed-sum
     - from: non-keyed-fixed-sum

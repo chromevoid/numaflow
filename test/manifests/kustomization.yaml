@@ -3,6 +3,7 @@ kind: Kustomization
 
 resources:
   - ../../config/cluster-install
+  - ../../config/extensions/webhook
 
 patches:
   - patch: |-
@@ -19,11 +20,6 @@ patches:
         value:
           name: NUMAFLOW_DEBUG
           value: "true"
-      - op: add
-        path: /spec/template/spec/containers/0/env/-
-        value:
-          name: NUMAFLOW_LEADER_ELECTION_DISABLED
-          value: "true"
     target:
       kind: Deployment
       name: numaflow-controller
@@ -31,9 +27,39 @@ patches:
       - op: add
         path: /spec/template/spec/containers/0/imagePullPolicy
         value: IfNotPresent
+      - op: add
+        path: /spec/template/spec/initContainers/0/imagePullPolicy
+        value: IfNotPresent
+      - op: add
+        path: /spec/template/spec/initContainers/1/imagePullPolicy
+        value: IfNotPresent
     target:
       kind: Deployment
       name: numaflow-server
+  - patch: |-
+      - op: add
+        path: /spec/template/spec/initContainers/0/imagePullPolicy
+        value: IfNotPresent
+    target:
+      kind: Deployment
+      name: numaflow-dex-server
+  - patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+    target:
+      kind: Deployment
+      name: numaflow-webhook
+
+patchesStrategicMerge:
+  - |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: numaflow-cmd-params-config
+    data:
+      controller.disable.leader.election: "true"
+
 namespace: numaflow-system
 
 commonLabels:

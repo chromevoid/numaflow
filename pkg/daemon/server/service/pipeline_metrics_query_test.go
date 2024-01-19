@@ -25,12 +25,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
 
 	"github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
 	"github.com/numaproj/numaflow/pkg/apis/proto/daemon"
 	"github.com/numaproj/numaflow/pkg/isbsvc"
-	"github.com/numaproj/numaflow/pkg/watermark/fetch"
+	"github.com/numaproj/numaflow/pkg/watermark/store"
 )
 
 type mockGetType func(url string) (*http.Response, error)
@@ -41,59 +40,71 @@ type mockHttpClient struct {
 
 func (m *mockHttpClient) Get(url string) (*http.Response, error) {
 	return m.MockGet(url)
-
 }
 
 type mockIsbSvcClient struct {
 }
 
-func (ms *mockIsbSvcClient) GetBufferInfo(ctx context.Context, buffer v1alpha1.Buffer) (*isbsvc.BufferInfo, error) {
+func (ms *mockIsbSvcClient) GetBufferInfo(ctx context.Context, buffer string) (*isbsvc.BufferInfo, error) {
 	return &isbsvc.BufferInfo{
-		Name:            buffer.Name,
+		Name:            buffer,
 		PendingCount:    10,
 		AckPendingCount: 15,
 		TotalMessages:   20,
 	}, nil
 }
 
-func (ms *mockIsbSvcClient) CreateBuffers(ctx context.Context, buffers []v1alpha1.Buffer, opts ...isbsvc.BufferCreateOption) error {
+func (ms *mockIsbSvcClient) CreateBuffersAndBuckets(ctx context.Context, buffers, buckets []string, sideInputsStore string, opts ...isbsvc.CreateOption) error {
 	return nil
 }
 
-func (ms *mockIsbSvcClient) DeleteBuffers(ctx context.Context, buffers []v1alpha1.Buffer) error {
+func (ms *mockIsbSvcClient) DeleteBuffersAndBuckets(ctx context.Context, buffers, buckets []string, sideInputsStore string) error {
 	return nil
 }
 
-func (ms *mockIsbSvcClient) ValidateBuffers(ctx context.Context, buffers []v1alpha1.Buffer) error {
+func (ms *mockIsbSvcClient) ValidateBuffersAndBuckets(ctx context.Context, buffers, buckets []string, sideInputsStore string) error {
 	return nil
 }
 
-func (ms *mockIsbSvcClient) CreateWatermarkFetcher(ctx context.Context, bufferName string) (fetch.Fetcher, error) {
+func (ms *mockIsbSvcClient) CreateWatermarkStores(ctx context.Context, bucketName string, partitions int, isReduce bool) ([]store.WatermarkStore, error) {
 	return nil, nil
+}
+
+// mock rater
+type mockRater_TestGetVertexMetrics struct {
+}
+
+func (mr *mockRater_TestGetVertexMetrics) Start(ctx context.Context) error {
+	return nil
+}
+
+func (mr *mockRater_TestGetVertexMetrics) GetRates(vertexName string, partitionName string) map[string]float64 {
+	res := make(map[string]float64)
+	res["default"] = 4.894736842105263
+	res["1m"] = 5.084745762711864
+	res["5m"] = 4.894736842105263
+	res["15m"] = 4.894736842105263
+	return res
 }
 
 func TestGetVertexMetrics(t *testing.T) {
 	pipelineName := "simple-pipeline"
+	vertexName := "cat"
+	vertexPartition := int32(1)
 	pipeline := &v1alpha1.Pipeline{
 		ObjectMeta: metav1.ObjectMeta{Name: pipelineName},
+		Spec:       v1alpha1.PipelineSpec{Vertices: []v1alpha1.AbstractVertex{{Name: vertexName, Partitions: &vertexPartition}}},
 	}
 	client, _ := isbsvc.NewISBJetStreamSvc(pipelineName)
-	pipelineMetricsQueryService, err := NewPipelineMetadataQuery(client, pipeline, nil)
+	pipelineMetricsQueryService, err := NewPipelineMetadataQuery(client, pipeline, nil, &mockRater_TestGetVertexMetrics{})
 	assert.NoError(t, err)
 
-	metricsResponse := `# HELP vertex_processing_rate Message processing rate in the last period of seconds, tps. It represents the rate of a vertex instead of a pod.
-# TYPE vertex_processing_rate gauge
-vertex_processing_rate{period="15m",pipeline="simple-pipeline",vertex="cat"} 4.894736842105263
-vertex_processing_rate{period="1m",pipeline="simple-pipeline",vertex="cat"} 5.084745762711864
-vertex_processing_rate{period="5m",pipeline="simple-pipeline",vertex="cat"} 4.894736842105263
-vertex_processing_rate{period="default",pipeline="simple-pipeline",vertex="cat"} 4.894736842105263
-
-# HELP vertex_pending_messages Average pending messages in the last period of seconds. It is the pending messages of a vertex, not a pod.
+	metricsResponse := `# HELP vertex_pending_messages Average pending messages in the last period of seconds. It is the pending messages of a vertex, not a pod.
 # TYPE vertex_pending_messages gauge
-vertex_pending_messages{period="15m",pipeline="simple-pipeline",vertex="cat"} 4.011
-vertex_pending_messages{period="1m",pipeline="simple-pipeline",vertex="cat"} 5.333
-vertex_pending_messages{period="5m",pipeline="simple-pipeline",vertex="cat"} 6.002
-vertex_pending_messages{period="default",pipeline="simple-pipeline",vertex="cat"} 7.00002
+vertex_pending_messages{period="15m",partition_name="-simple-pipeline-cat-0",pipeline="simple-pipeline",vertex="cat"} 4.011
+vertex_pending_messages{period="1m",partition_name="-simple-pipeline-cat-0",pipeline="simple-pipeline",vertex="cat"} 5.333
+vertex_pending_messages{period="5m",partition_name="-simple-pipeline-cat-0",pipeline="simple-pipeline",vertex="cat"} 6.002
+vertex_pending_messages{period="default",partition_name="-simple-pipeline-cat-0",pipeline="simple-pipeline",vertex="cat"} 7.00002
 `
 	ioReader := io.NopCloser(bytes.NewReader([]byte(metricsResponse)))
 
@@ -153,17 +164,16 @@ func TestGetBuffer(t *testing.T) {
 	}
 
 	ms := &mockIsbSvcClient{}
-	pipelineMetricsQueryService, err := NewPipelineMetadataQuery(ms, pipeline, nil)
+	pipelineMetricsQueryService, err := NewPipelineMetadataQuery(ms, pipeline, nil, nil)
 	assert.NoError(t, err)
 
-	bufferName := "numaflow-system-simple-pipeline-in-cat"
+	bufferName := "numaflow-system-simple-pipeline-cat-0"
 
 	req := &daemon.GetBufferRequest{Pipeline: &pipelineName, Buffer: &bufferName}
 
 	resp, err := pipelineMetricsQueryService.GetBuffer(context.Background(), req)
 	assert.NoError(t, err)
 	assert.Equal(t, *resp.Buffer.BufferUsage, 0.0006666666666666666)
-
 }
 
 func TestListBuffers(t *testing.T) {
@@ -186,16 +196,16 @@ func TestListBuffers(t *testing.T) {
 		},
 		Spec: v1alpha1.PipelineSpec{
 			Vertices: []v1alpha1.AbstractVertex{
-				{Name: "in"},
-				{Name: "cat"},
-				{Name: "out"},
+				{Name: "in", Source: &v1alpha1.Source{}},
+				{Name: "cat", UDF: &v1alpha1.UDF{}},
+				{Name: "out", Sink: &v1alpha1.Sink{}},
 			},
 			Edges: edges,
 		},
 	}
 
 	ms := &mockIsbSvcClient{}
-	pipelineMetricsQueryService, err := NewPipelineMetadataQuery(ms, pipeline, nil)
+	pipelineMetricsQueryService, err := NewPipelineMetadataQuery(ms, pipeline, nil, nil)
 	assert.NoError(t, err)
 
 	req := &daemon.ListBuffersRequest{Pipeline: &pipelineName}
@@ -203,84 +213,4 @@ func TestListBuffers(t *testing.T) {
 	resp, err := pipelineMetricsQueryService.ListBuffers(context.Background(), req)
 	assert.NoError(t, err)
 	assert.Equal(t, len(resp.Buffers), 2)
-}
-
-func TestGetPipelineStatus(t *testing.T) {
-	pipelineName := "simple-pipeline"
-	pipeline := &v1alpha1.Pipeline{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: pipelineName,
-		},
-		Spec: v1alpha1.PipelineSpec{
-			Vertices: []v1alpha1.AbstractVertex{
-				{Name: "cat"},
-			},
-		},
-	}
-	client, _ := isbsvc.NewISBJetStreamSvc(pipelineName)
-	pipelineMetricsQueryService, err := NewPipelineMetadataQuery(client, pipeline, nil)
-	assert.NoError(t, err)
-
-	OKPipelineResponse := daemon.PipelineStatus{Status: pointer.String("OK"), Message: pointer.String("Pipeline has no issue.")}
-	ErrorPipelineResponse := daemon.PipelineStatus{Status: pointer.String("Error"), Message: pointer.String("Pipeline has an error. Vertex cat is not processing pending messages.")}
-
-	metricsResponse := `# HELP vertex_processing_rate Message processing rate in the last period of seconds, tps. It represents the rate of a vertex instead of a pod.
-# TYPE vertex_processing_rate gauge
-vertex_processing_rate{period="15m",pipeline="simple-pipeline",vertex="cat"} 4.894736842105263
-vertex_processing_rate{period="1m",pipeline="simple-pipeline",vertex="cat"} 5.084745762711864
-vertex_processing_rate{period="5m",pipeline="simple-pipeline",vertex="cat"} 4.894736842105263
-vertex_processing_rate{period="default",pipeline="simple-pipeline",vertex="cat"} 4.894736842105263
-
-# HELP vertex_pending_messages Average pending messages in the last period of seconds. It is the pending messages of a vertex, not a pod.
-# TYPE vertex_pending_messages gauge
-vertex_pending_messages{period="15m",pipeline="simple-pipeline",vertex="cat"} 4.011
-vertex_pending_messages{period="1m",pipeline="simple-pipeline",vertex="cat"} 5.333
-vertex_pending_messages{period="5m",pipeline="simple-pipeline",vertex="cat"} 6.002
-vertex_pending_messages{period="default",pipeline="simple-pipeline",vertex="cat"} 7.00002
-`
-	ioReader := io.NopCloser(bytes.NewReader([]byte(metricsResponse)))
-
-	pipelineMetricsQueryService.httpClient = &mockHttpClient{
-		MockGet: func(url string) (*http.Response, error) {
-			return &http.Response{
-				StatusCode: 200,
-				Body:       ioReader,
-			}, nil
-		},
-	}
-
-	req := &daemon.GetPipelineStatusRequest{Pipeline: &pipelineName}
-
-	resp, err := pipelineMetricsQueryService.GetPipelineStatus(context.Background(), req)
-	assert.NoError(t, err)
-	assert.Equal(t, &OKPipelineResponse, resp.Status)
-
-	errorMetricsResponse := `# HELP vertex_processing_rate Message processing rate in the last period of seconds, tps. It represents the rate of a vertex instead of a pod.
-# TYPE vertex_processing_rate gauge
-vertex_processing_rate{period="15m",pipeline="simple-pipeline",vertex="cat"} 0
-vertex_processing_rate{period="1m",pipeline="simple-pipeline",vertex="cat"} 0
-vertex_processing_rate{period="5m",pipeline="simple-pipeline",vertex="cat"} 0
-vertex_processing_rate{period="default",pipeline="simple-pipeline",vertex="cat"} 0
-
-# HELP vertex_pending_messages Average pending messages in the last period of seconds. It is the pending messages of a vertex, not a pod.
-# TYPE vertex_pending_messages gauge
-vertex_pending_messages{period="15m",pipeline="simple-pipeline",vertex="cat"} 4.011
-vertex_pending_messages{period="1m",pipeline="simple-pipeline",vertex="cat"} 5.333
-vertex_pending_messages{period="5m",pipeline="simple-pipeline",vertex="cat"} 6.002
-vertex_pending_messages{period="default",pipeline="simple-pipeline",vertex="cat"} 7.00002
-`
-	ioReader = io.NopCloser(bytes.NewReader([]byte(errorMetricsResponse)))
-
-	pipelineMetricsQueryService.httpClient = &mockHttpClient{
-		MockGet: func(url string) (*http.Response, error) {
-			return &http.Response{
-				StatusCode: 200,
-				Body:       ioReader,
-			}, nil
-		},
-	}
-
-	resp, err = pipelineMetricsQueryService.GetPipelineStatus(context.Background(), req)
-	assert.NoError(t, err)
-	assert.Equal(t, &ErrorPipelineResponse, resp.Status)
 }

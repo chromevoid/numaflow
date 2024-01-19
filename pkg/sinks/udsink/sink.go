@@ -18,29 +18,27 @@ package udsink
 
 import (
 	"context"
-	"fmt"
 	"time"
 
+	sinkpb "github.com/numaproj/numaflow-go/pkg/apis/proto/sink/v1"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	sinkpb "github.com/numaproj/numaflow-go/pkg/apis/proto/sink/v1"
-
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
-	"github.com/numaproj/numaflow/pkg/forward"
-	"github.com/numaproj/numaflow/pkg/forward/applier"
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
+	sinkforward "github.com/numaproj/numaflow/pkg/sinks/forward"
 	"github.com/numaproj/numaflow/pkg/watermark/fetch"
 	"github.com/numaproj/numaflow/pkg/watermark/publish"
+	"github.com/numaproj/numaflow/pkg/watermark/wmb"
 )
 
 type UserDefinedSink struct {
 	name         string
 	pipelineName string
-	isdf         *forward.InterStepDataForward
+	isdf         *sinkforward.DataForward
 	logger       *zap.SugaredLogger
-	udsink       *UDSgRPCBasedUDSink
+	udsink       SinkApplier
 }
 
 type Option func(*UserDefinedSink) error
@@ -53,11 +51,18 @@ func WithLogger(log *zap.SugaredLogger) Option {
 }
 
 // NewUserDefinedSink returns genericSink type.
-func NewUserDefinedSink(vertex *dfv1.Vertex, fromBuffer isb.BufferReader, fetchWatermark fetch.Fetcher, publishWatermark map[string]publish.Publisher, opts ...Option) (*UserDefinedSink, error) {
+func NewUserDefinedSink(vertexInstance *dfv1.VertexInstance,
+	fromBuffer isb.BufferReader,
+	fetchWatermark fetch.Fetcher,
+	publishWatermark publish.Publisher,
+	idleManager wmb.IdleManager,
+	udsink SinkApplier,
+	opts ...Option) (*UserDefinedSink, error) {
+
 	s := new(UserDefinedSink)
-	name := vertex.Spec.Name
+	name := vertexInstance.Vertex.Spec.Name
 	s.name = name
-	s.pipelineName = vertex.Spec.PipelineName
+	s.pipelineName = vertexInstance.Vertex.Spec.PipelineName
 	for _, o := range opts {
 		if err := o(s); err != nil {
 			return nil, err
@@ -67,18 +72,14 @@ func NewUserDefinedSink(vertex *dfv1.Vertex, fromBuffer isb.BufferReader, fetchW
 		s.logger = logging.NewLogger()
 	}
 
-	forwardOpts := []forward.Option{forward.WithVertexType(dfv1.VertexTypeSink), forward.WithLogger(s.logger)}
-	if x := vertex.Spec.Limits; x != nil {
+	forwardOpts := []sinkforward.Option{sinkforward.WithLogger(s.logger)}
+	if x := vertexInstance.Vertex.Spec.Limits; x != nil {
 		if x.ReadBatchSize != nil {
-			forwardOpts = append(forwardOpts, forward.WithReadBatchSize(int64(*x.ReadBatchSize)))
+			forwardOpts = append(forwardOpts, sinkforward.WithReadBatchSize(int64(*x.ReadBatchSize)))
 		}
 	}
-	udsink, err := NewUDSgRPCBasedUDSink()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gRPC client, %w", err)
-	}
 	s.udsink = udsink
-	isdf, err := forward.NewInterStepDataForward(vertex, fromBuffer, map[string]isb.BufferWriter{vertex.GetToBuffers()[0].Name: s}, forward.All, applier.Terminal, fetchWatermark, publishWatermark, forwardOpts...)
+	isdf, err := sinkforward.NewDataForward(vertexInstance, fromBuffer, s, fetchWatermark, publishWatermark, idleManager, forwardOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -90,40 +91,37 @@ func (s *UserDefinedSink) GetName() string {
 	return s.name
 }
 
+// GetPartitionIdx returns the partition index.
+// for sink it is always 0.
+func (s *UserDefinedSink) GetPartitionIdx() int32 {
+	return 0
+}
+
 func (s *UserDefinedSink) IsFull() bool {
 	return false
 }
 
 // Write writes to the UDSink container.
 func (s *UserDefinedSink) Write(ctx context.Context, messages []isb.Message) ([]isb.Offset, []error) {
-	msgs := make([]*sinkpb.DatumRequest, len(messages))
+	msgs := make([]*sinkpb.SinkRequest, len(messages))
 	for i, m := range messages {
-		msgs[i] = &sinkpb.DatumRequest{
-			// NOTE: key is not used anywhere ATM
+		msgs[i] = &sinkpb.SinkRequest{
 			Id:        m.ID,
 			Value:     m.Payload,
-			EventTime: &sinkpb.EventTime{EventTime: timestamppb.New(m.EventTime)},
+			Keys:      m.Keys,
+			EventTime: timestamppb.New(m.EventTime),
 			// Watermark is only available in readmessage....
-			Watermark: &sinkpb.Watermark{Watermark: timestamppb.New(time.Time{})}, // TODO: insert the correct watermark
+			Watermark: timestamppb.New(time.Time{}), // TODO: insert the correct watermark
 		}
 	}
-	return nil, s.udsink.Apply(ctx, msgs)
+	return nil, s.udsink.ApplySink(ctx, msgs)
 }
 
 func (s *UserDefinedSink) Close() error {
-	if s.udsink != nil {
-		return s.udsink.CloseConn(context.Background())
-	}
 	return nil
 }
 
 func (s *UserDefinedSink) Start() <-chan struct{} {
-	// Readiness check
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	if err := s.udsink.WaitUntilReady(ctx); err != nil {
-		s.logger.Fatalf("failed on UDSink readiness check, %s", err)
-	}
 	return s.isdf.Start()
 }
 
@@ -133,9 +131,4 @@ func (s *UserDefinedSink) Stop() {
 
 func (s *UserDefinedSink) ForceStop() {
 	s.isdf.ForceStop()
-}
-
-// IsHealthy checks if the udsink sidecar is healthy.
-func (s *UserDefinedSink) IsHealthy(ctx context.Context) error {
-	return s.udsink.WaitUntilReady(ctx)
 }

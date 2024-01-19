@@ -24,23 +24,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/numaproj/numaflow/pkg/forward"
-	"github.com/numaproj/numaflow/pkg/watermark/generic"
-
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
+	"github.com/numaproj/numaflow/pkg/forwarder"
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/isb/testutils"
 	redisclient "github.com/numaproj/numaflow/pkg/shared/clients/redis"
+	"github.com/numaproj/numaflow/pkg/udf/forward"
+	"github.com/numaproj/numaflow/pkg/watermark/generic"
+	"github.com/numaproj/numaflow/pkg/watermark/wmb"
 )
 
 func TestRedisQWrite_Write(t *testing.T) {
 	client := redisclient.NewRedisClient(redisOptions)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute*10)
 	defer cancel()
-	rqw, _ := NewBufferWrite(ctx, client, "rediswrite", "test", redisclient.WithLagDuration(2*time.Millisecond), redisclient.WithInfoRefreshInterval(2*time.Millisecond)).(*BufferWrite)
+	rqw, _ := NewBufferWrite(ctx, client, "rediswrite", "test", defaultPartitionIdx, redisclient.WithLagDuration(2*time.Millisecond), redisclient.WithInfoRefreshInterval(2*time.Millisecond)).(*BufferWrite)
 
 	for rqw.IsFull() {
 		select {
@@ -91,13 +92,13 @@ func TestRedisQWrite_WithPipeline(t *testing.T) {
 	ctx := context.Background()
 	stream := "withPipeline"
 	count := int64(100)
-	rqw, _ := NewBufferWrite(ctx, client, stream, "test", redisclient.WithoutPipelining()).(*BufferWrite)
+	rqw, _ := NewBufferWrite(ctx, client, stream, "test", defaultPartitionIdx, redisclient.WithoutPipelining()).(*BufferWrite)
 	streamName := rqw.GetStreamName()
 	defer func() { _ = client.DeleteKeys(ctx, streamName) }()
 	group := "withPipeline-group"
 	consumer := "withPipeline-0"
 
-	rqr, _ := NewBufferRead(ctx, client, stream, group, consumer).(*BufferRead)
+	rqr, _ := NewBufferRead(ctx, client, stream, group, consumer, defaultPartitionIdx).(*BufferRead)
 	err := client.CreateStreamGroup(ctx, rqr.GetStreamName(), group, redisclient.ReadFromEarliest)
 	assert.NoError(t, err)
 	defer func() { _ = client.DeleteStreamGroup(ctx, rqr.GetStreamName(), group) }()
@@ -117,14 +118,14 @@ func TestRedisQWrite_WithoutPipeline(t *testing.T) {
 	ctx := context.Background()
 	stream := "withoutPipeline"
 	count := int64(100)
-	rqw, _ := NewBufferWrite(ctx, client, stream, "test").(*BufferWrite)
+	rqw, _ := NewBufferWrite(ctx, client, stream, "test", defaultPartitionIdx).(*BufferWrite)
 
 	streamName := rqw.GetStreamName()
 	defer func() { _ = client.DeleteKeys(ctx, streamName) }()
 	group := "withoutPipeline-group"
 	consumer := "withoutPipeline-0"
 
-	rqr, _ := NewBufferRead(ctx, client, stream, group, consumer).(*BufferRead)
+	rqr, _ := NewBufferRead(ctx, client, stream, group, consumer, defaultPartitionIdx).(*BufferRead)
 	err := client.CreateStreamGroup(ctx, rqr.GetStreamName(), group, redisclient.ReadFromEarliest)
 	assert.NoError(t, err)
 
@@ -144,7 +145,7 @@ func TestRedisQWrite_WithInfoRefreshInterval(t *testing.T) {
 	stream := "withInfoRefreshInterval"
 	count := int64(10)
 	group := "withInfoRefreshInterval-group"
-	rqw, _ := NewBufferWrite(ctx, client, stream, group, redisclient.WithInfoRefreshInterval(2*time.Millisecond), redisclient.WithLagDuration(2*time.Millisecond), redisclient.WithMaxLength(10)).(*BufferWrite)
+	rqw, _ := NewBufferWrite(ctx, client, stream, group, defaultPartitionIdx, redisclient.WithInfoRefreshInterval(2*time.Millisecond), redisclient.WithLagDuration(2*time.Millisecond), redisclient.WithMaxLength(10)).(*BufferWrite)
 	err := client.CreateStreamGroup(ctx, rqw.GetStreamName(), group, redisclient.ReadFromEarliest)
 	if err != nil {
 		t.Fatalf("error creating consumer group: %s", err)
@@ -184,7 +185,7 @@ func TestRedisQWrite_WithInfoRefreshInterval_WithBufferFullWritingStrategyIsDisc
 	stream := "withInfoRefreshInterval"
 	count := int64(10)
 	group := "withInfoRefreshInterval-group"
-	rqw, _ := NewBufferWrite(ctx, client, stream, group, redisclient.WithInfoRefreshInterval(2*time.Millisecond), redisclient.WithLagDuration(2*time.Millisecond), redisclient.WithMaxLength(10), redisclient.WithBufferFullWritingStrategy(dfv1.DiscardLatest)).(*BufferWrite)
+	rqw, _ := NewBufferWrite(ctx, client, stream, group, defaultPartitionIdx, redisclient.WithInfoRefreshInterval(2*time.Millisecond), redisclient.WithLagDuration(2*time.Millisecond), redisclient.WithMaxLength(10), redisclient.WithBufferFullWritingStrategy(dfv1.DiscardLatest)).(*BufferWrite)
 	err := client.CreateStreamGroup(ctx, rqw.GetStreamName(), group, redisclient.ReadFromEarliest)
 	if err != nil {
 		t.Fatalf("error creating consumer group: %s", err)
@@ -282,7 +283,7 @@ func Test_updateIsFullFlag(t *testing.T) {
 	group := "getConsumerLag-group"
 	count := int64(9)
 
-	rqw, _ := NewBufferWrite(ctx, client, stream, group, redisclient.WithInfoRefreshInterval(2*time.Millisecond), redisclient.WithMaxLength(10)).(*BufferWrite)
+	rqw, _ := NewBufferWrite(ctx, client, stream, group, defaultPartitionIdx, redisclient.WithInfoRefreshInterval(2*time.Millisecond), redisclient.WithMaxLength(10)).(*BufferWrite)
 	err := client.CreateStreamGroup(ctx, rqw.GetStreamName(), group, redisclient.ReadFromEarliest)
 	defer func() { _ = client.DeleteStreamGroup(ctx, rqw.GetStreamName(), group) }()
 
@@ -316,7 +317,7 @@ func Test_GetName(t *testing.T) {
 	stream := "getName"
 	group := "getName-group"
 	ctx := context.Background()
-	rqw, _ := NewBufferWrite(ctx, client, stream, group).(*BufferWrite)
+	rqw, _ := NewBufferWrite(ctx, client, stream, group, defaultPartitionIdx).(*BufferWrite)
 	assert.Equal(t, stream, rqw.GetName())
 
 }
@@ -326,7 +327,7 @@ func Test_GetLag(t *testing.T) {
 	stream := "getLag"
 	group := "getLag-group"
 	ctx := context.Background()
-	rqw, _ := NewBufferWrite(ctx, client, stream, group).(*BufferWrite)
+	rqw, _ := NewBufferWrite(ctx, client, stream, group, defaultPartitionIdx).(*BufferWrite)
 	assert.Equal(t, time.Duration(0), rqw.GetConsumerLag())
 }
 
@@ -334,7 +335,7 @@ func Test_GetRefreshFullError(t *testing.T) {
 	client := redisclient.NewRedisClient(redisOptions)
 	group := "getRefreshFull-group"
 	ctx := context.Background()
-	rqw, _ := NewBufferWrite(ctx, client, "", group).(*BufferWrite)
+	rqw, _ := NewBufferWrite(ctx, client, "", group, defaultPartitionIdx).(*BufferWrite)
 	expected := uint32(3)
 	assert.Equal(t, expected, rqw.GetRefreshFullError())
 }
@@ -342,12 +343,19 @@ func Test_GetRefreshFullError(t *testing.T) {
 type myForwardRedisTest struct {
 }
 
-func (f myForwardRedisTest) WhereTo(_ []string, _ []string) ([]string, error) {
-	return []string{"to1"}, nil
+func (f myForwardRedisTest) WhereTo(_ []string, _ []string) ([]forwarder.VertexBuffer, error) {
+	return []forwarder.VertexBuffer{{
+		ToVertexName:         "to1",
+		ToVertexPartitionIdx: 0,
+	}}, nil
 }
 
 func (f myForwardRedisTest) ApplyMap(ctx context.Context, message *isb.ReadMessage) ([]*isb.WriteMessage, error) {
 	return testutils.CopyUDFTestApply(ctx, message)
+}
+
+func (f myForwardRedisTest) ApplyMapStream(ctx context.Context, message *isb.ReadMessage, writeMessageCh chan<- isb.WriteMessage) error {
+	return testutils.CopyUDFTestApplyStream(ctx, message, writeMessageCh)
 }
 
 // TestNewInterStepDataForwardRedis is used to read data from one step to another using redis as the Inter-Step Buffer
@@ -365,23 +373,23 @@ func TestNewInterStepDataForwardRedis(t *testing.T) {
 	toStream := "toStep"
 
 	// fromStep, we also have to create a fromStepWrite here to write data to the from stream
-	fromStep, _ := NewBufferRead(ctx, client, fromStream, fromGroup, consumer, redisclient.WithInfoRefreshInterval(2*time.Millisecond)).(*BufferRead)
+	fromStep, _ := NewBufferRead(ctx, client, fromStream, fromGroup, consumer, defaultPartitionIdx, redisclient.WithInfoRefreshInterval(2*time.Millisecond)).(*BufferRead)
 	_ = client.CreateStreamGroup(ctx, fromStep.GetStreamName(), fromGroup, redisclient.ReadFromEarliest)
-	fromStepWrite, _ := NewBufferWrite(ctx, client, fromStream, fromGroup, redisclient.WithInfoRefreshInterval(2*time.Second), redisclient.WithLagDuration(1*time.Millisecond)).(*BufferWrite)
+	fromStepWrite, _ := NewBufferWrite(ctx, client, fromStream, fromGroup, defaultPartitionIdx, redisclient.WithInfoRefreshInterval(2*time.Second), redisclient.WithLagDuration(1*time.Millisecond)).(*BufferWrite)
 	defer func() { _ = client.DeleteKeys(ctx, fromStepWrite.GetStreamName()) }()
 	defer func() { _ = client.DeleteKeys(ctx, fromStep.GetStreamName()) }()
 	defer func() { _ = client.DeleteStreamGroup(ctx, fromStep.GetStreamName(), fromGroup) }()
 
 	// toStep, we also have to create a toStepRead here to read from the toStep
-	to1Read, _ := NewBufferRead(ctx, client, toStream, toGroup, consumer).(*BufferRead)
+	to1Read, _ := NewBufferRead(ctx, client, toStream, toGroup, consumer, defaultPartitionIdx).(*BufferRead)
 	_ = client.CreateStreamGroup(ctx, to1Read.GetStreamName(), toGroup, redisclient.ReadFromEarliest)
-	to1, _ := NewBufferWrite(ctx, client, toStream, toGroup, redisclient.WithLagDuration(1*time.Millisecond), redisclient.WithInfoRefreshInterval(2*time.Second), redisclient.WithMaxLength(17)).(*BufferWrite)
+	to1, _ := NewBufferWrite(ctx, client, toStream, toGroup, defaultPartitionIdx, redisclient.WithLagDuration(1*time.Millisecond), redisclient.WithInfoRefreshInterval(2*time.Second), redisclient.WithMaxLength(17)).(*BufferWrite)
 	defer func() { _ = client.DeleteKeys(ctx, to1.GetStreamName()) }()
 	defer func() { _ = client.DeleteKeys(ctx, to1.GetStreamName()) }()
 	defer func() { _ = client.DeleteStreamGroup(ctx, to1.GetStreamName(), toGroup) }()
 
-	toSteps := map[string]isb.BufferWriter{
-		"to1": to1,
+	toSteps := map[string][]isb.BufferWriter{
+		"to1": {to1},
 	}
 
 	writeMessages, internalKeys := buildTestWriteMessages(fromStepWrite, int64(20), testStartTime)
@@ -395,14 +403,18 @@ func TestNewInterStepDataForwardRedis(t *testing.T) {
 		},
 	}}
 
+	vertexInstance := &dfv1.VertexInstance{
+		Vertex:  vertex,
+		Replica: 0,
+	}
+
 	fetchWatermark, publishWatermark := generic.BuildNoOpWatermarkProgressorsFromBufferMap(toSteps)
-	f, err := forward.NewInterStepDataForward(vertex, fromStep, toSteps, myForwardRedisTest{}, myForwardRedisTest{}, fetchWatermark, publishWatermark)
+	f, err := forward.NewInterStepDataForward(vertexInstance, fromStep, toSteps, myForwardRedisTest{}, myForwardRedisTest{}, myForwardRedisTest{}, fetchWatermark, publishWatermark, wmb.NewNoOpIdleManager())
 	assert.NoError(t, err)
 	assert.False(t, to1.IsFull())
 
-	// forwardDataAndVerify is used to verify if data is fowarded from the from and received in the to buffer.
+	// forwardDataAndVerify is used to verify if data is forwarded from the from and received in the to buffer.
 	forwardDataAndVerify(ctx, t, fromStepWrite, to1Read, to1, fromStep, f, writeMessages, count)
-
 }
 
 // TestReadTimeout tests that even though we have a blocking read, our Stop function exits cleanly
@@ -418,20 +430,21 @@ func TestReadTimeout(t *testing.T) {
 	toStream := "to-st"
 
 	// fromStep, we also have to create a fromStepWrite here to write data to the from stream
-	fromStep, _ := NewBufferRead(ctx, client, fromStream, fromGroup, consumer, redisclient.WithInfoRefreshInterval(2*time.Millisecond)).(*BufferRead)
+	fromStep, _ := NewBufferRead(ctx, client, fromStream, fromGroup, consumer, defaultPartitionIdx, redisclient.WithInfoRefreshInterval(2*time.Millisecond)).(*BufferRead)
 	_ = client.CreateStreamGroup(ctx, fromStep.GetStreamName(), fromGroup, redisclient.ReadFromEarliest)
 	defer func() { _ = client.DeleteKeys(ctx, fromStep.GetStreamName()) }()
 	defer func() { _ = client.DeleteStreamGroup(ctx, fromStep.GetStreamName(), fromGroup) }()
 
-	to1, _ := NewBufferWrite(ctx, client, toStream, toGroup, redisclient.WithLagDuration(1*time.Millisecond), redisclient.WithInfoRefreshInterval(2*time.Second)).(*BufferWrite)
+	to1, _ := NewBufferWrite(ctx, client, toStream, toGroup, defaultPartitionIdx, redisclient.WithLagDuration(1*time.Millisecond), redisclient.WithInfoRefreshInterval(2*time.Second)).(*BufferWrite)
 	_ = client.CreateStreamGroup(ctx, to1.GetStreamName(), toGroup, redisclient.ReadFromEarliest)
 
 	defer func() { _ = client.DeleteKeys(ctx, to1.GetStreamName()) }()
 	defer func() { _ = client.DeleteStreamGroup(ctx, to1.GetStreamName(), toGroup) }()
 
-	toSteps := map[string]isb.BufferWriter{
-		"to1": to1,
+	toSteps := map[string][]isb.BufferWriter{
+		"to1": {to1},
 	}
+
 	vertex := &dfv1.Vertex{Spec: dfv1.VertexSpec{
 		PipelineName: "testPipeline",
 		AbstractVertex: dfv1.AbstractVertex{
@@ -439,8 +452,13 @@ func TestReadTimeout(t *testing.T) {
 		},
 	}}
 
+	vertexInstance := &dfv1.VertexInstance{
+		Vertex:  vertex,
+		Replica: 0,
+	}
+
 	fetchWatermark, publishWatermark := generic.BuildNoOpWatermarkProgressorsFromBufferMap(toSteps)
-	f, err := forward.NewInterStepDataForward(vertex, fromStep, toSteps, myForwardRedisTest{}, myForwardRedisTest{}, fetchWatermark, publishWatermark)
+	f, err := forward.NewInterStepDataForward(vertexInstance, fromStep, toSteps, myForwardRedisTest{}, myForwardRedisTest{}, myForwardRedisTest{}, fetchWatermark, publishWatermark, wmb.NewNoOpIdleManager())
 	assert.NoError(t, err)
 	stopped := f.Start()
 	// Call stop to end the test as we have a blocking read. The forwarder is up and running with no messages written
@@ -459,7 +477,7 @@ func TestXTrimOnIsFull(t *testing.T) {
 	group := "trim-group"
 	buffer := "trim"
 
-	rqw, _ := NewBufferWrite(ctx, client, buffer, group, redisclient.WithLagDuration(1*time.Millisecond), redisclient.WithInfoRefreshInterval(2*time.Millisecond), redisclient.WithMaxLength(10)).(*BufferWrite)
+	rqw, _ := NewBufferWrite(ctx, client, buffer, group, defaultPartitionIdx, redisclient.WithLagDuration(1*time.Millisecond), redisclient.WithInfoRefreshInterval(2*time.Millisecond), redisclient.WithMaxLength(10)).(*BufferWrite)
 	err := client.CreateStreamGroup(ctx, rqw.GetStreamName(), group, redisclient.ReadFromEarliest)
 	assert.NoError(t, err)
 
@@ -495,7 +513,7 @@ func TestXTrimOnIsFull(t *testing.T) {
 	}
 
 	// Read all the messages.
-	rqr, _ := NewBufferRead(ctx, client, buffer, group, "consumer").(*BufferRead)
+	rqr, _ := NewBufferRead(ctx, client, buffer, group, "consumer", 0).(*BufferRead)
 
 	defer func() { _ = client.DeleteKeys(ctx, rqr.GetStreamName()) }()
 
@@ -524,7 +542,7 @@ func TestSetWriteInfo(t *testing.T) {
 	group := "setWriteInfo-group"
 	buffer := "setWriteInfo"
 
-	rqw, _ := NewBufferWrite(ctx, client, buffer, group, redisclient.WithLagDuration(1*time.Millisecond), redisclient.WithInfoRefreshInterval(2*time.Millisecond), redisclient.WithRefreshBufferWriteInfo(false)).(*BufferWrite)
+	rqw, _ := NewBufferWrite(ctx, client, buffer, group, defaultPartitionIdx, redisclient.WithLagDuration(1*time.Millisecond), redisclient.WithInfoRefreshInterval(2*time.Millisecond), redisclient.WithRefreshBufferWriteInfo(false)).(*BufferWrite)
 	err := client.CreateStreamGroup(ctx, rqw.GetStreamName(), group, redisclient.ReadFromEarliest)
 	assert.NoError(t, err)
 
@@ -544,7 +562,7 @@ func TestSetWriteInfo(t *testing.T) {
 	}
 
 	// Read all the messages.
-	rqr, _ := NewBufferRead(ctx, client, buffer, group, "consumer").(*BufferRead)
+	rqr, _ := NewBufferRead(ctx, client, buffer, group, "consumer", defaultPartitionIdx).(*BufferRead)
 
 	defer func() { _ = client.DeleteKeys(ctx, rqr.GetStreamName()) }()
 

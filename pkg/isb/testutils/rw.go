@@ -21,12 +21,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
+	"github.com/numaproj/numaflow/pkg/window"
 )
 
 // PayloadForTest is a dummy payload for testing.
@@ -50,7 +52,7 @@ func BuildTestWriteMessages(count int64, startTime time.Time) []isb.Message {
 					MessageInfo: isb.MessageInfo{
 						EventTime: tmpTime,
 					},
-					ID:   fmt.Sprintf("%d", i),
+					ID:   fmt.Sprintf("%d-testVertex-0-0", i), // TODO: hard coded ID suffix ATM, make configurable if needed
 					Keys: []string{},
 				},
 				Body: isb.Body{Payload: result},
@@ -61,6 +63,20 @@ func BuildTestWriteMessages(count int64, startTime time.Time) []isb.Message {
 	return messages
 }
 
+// BuildTestWindowRequests builds test window.TimedWindowRequest which can be used for testing.
+func BuildTestWindowRequests(count int64, startTime time.Time, windowOp window.Operation) []window.TimedWindowRequest {
+	var readMessages = BuildTestReadMessages(count, startTime)
+	var windowRequests = make([]window.TimedWindowRequest, count)
+
+	for idx, readMessage := range readMessages {
+		windowRequests[idx] = window.TimedWindowRequest{
+			ReadMessage: &readMessage,
+			Operation:   windowOp,
+		}
+	}
+	return windowRequests
+}
+
 // BuildTestReadMessages builds test isb.ReadMessage which can be used for testing.
 func BuildTestReadMessages(count int64, startTime time.Time) []isb.ReadMessage {
 	writeMessages := BuildTestWriteMessages(count, startTime)
@@ -69,7 +85,7 @@ func BuildTestReadMessages(count int64, startTime time.Time) []isb.ReadMessage {
 	for idx, writeMessage := range writeMessages {
 		readMessages[idx] = isb.ReadMessage{
 			Message:    writeMessage,
-			ReadOffset: isb.SimpleStringOffset(func() string { return fmt.Sprintf("read_%s", writeMessage.Header.ID) }),
+			ReadOffset: isb.NewSimpleStringPartitionOffset(fmt.Sprintf("read_%s", writeMessage.Header.ID), 0),
 		}
 	}
 
@@ -82,10 +98,11 @@ func BuildTestReadMessagesIntOffset(count int64, startTime time.Time) []isb.Read
 	var readMessages = make([]isb.ReadMessage, count)
 
 	for idx, writeMessage := range writeMessages {
-		offset, _ := strconv.Atoi(writeMessage.Header.ID)
+		splitStr := strings.Split(writeMessage.Header.ID, "-")
+		offset, _ := strconv.Atoi(splitStr[0])
 		readMessages[idx] = isb.ReadMessage{
 			Message:    writeMessage,
-			ReadOffset: isb.SimpleIntOffset(func() int64 { return int64(offset) }),
+			ReadOffset: isb.NewSimpleIntPartitionOffset(int64(offset), 0),
 		}
 	}
 

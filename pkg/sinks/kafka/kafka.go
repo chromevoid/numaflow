@@ -21,18 +21,18 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Shopify/sarama"
+	"github.com/IBM/sarama"
 	"go.uber.org/zap"
 
 	dfv1 "github.com/numaproj/numaflow/pkg/apis/numaflow/v1alpha1"
-	"github.com/numaproj/numaflow/pkg/forward"
-	"github.com/numaproj/numaflow/pkg/forward/applier"
 	"github.com/numaproj/numaflow/pkg/isb"
 	"github.com/numaproj/numaflow/pkg/metrics"
 	"github.com/numaproj/numaflow/pkg/shared/logging"
 	"github.com/numaproj/numaflow/pkg/shared/util"
+	sinkforward "github.com/numaproj/numaflow/pkg/sinks/forward"
 	"github.com/numaproj/numaflow/pkg/watermark/fetch"
 	"github.com/numaproj/numaflow/pkg/watermark/publish"
+	"github.com/numaproj/numaflow/pkg/watermark/wmb"
 )
 
 // ToKafka produce the output to a kafka sinks.
@@ -42,7 +42,7 @@ type ToKafka struct {
 	producer     sarama.AsyncProducer
 	connected    bool
 	topic        string
-	isdf         *forward.InterStepDataForward
+	isdf         *sinkforward.DataForward
 	kafkaSink    *dfv1.KafkaSink
 	log          *zap.SugaredLogger
 }
@@ -57,8 +57,14 @@ func WithLogger(log *zap.SugaredLogger) Option {
 }
 
 // NewToKafka returns ToKafka type.
-func NewToKafka(vertex *dfv1.Vertex, fromBuffer isb.BufferReader, fetchWatermark fetch.Fetcher, publishWatermark map[string]publish.Publisher, opts ...Option) (*ToKafka, error) {
-	kafkaSink := vertex.Spec.Sink.Kafka
+func NewToKafka(vertexInstance *dfv1.VertexInstance,
+	fromBuffer isb.BufferReader,
+	fetchWatermark fetch.Fetcher,
+	publishWatermark publish.Publisher,
+	idleManager wmb.IdleManager,
+	opts ...Option) (*ToKafka, error) {
+
+	kafkaSink := vertexInstance.Vertex.Spec.Sink.Kafka
 	toKafka := new(ToKafka)
 	// apply options for kafka sink
 	for _, o := range opts {
@@ -72,19 +78,19 @@ func NewToKafka(vertex *dfv1.Vertex, fromBuffer isb.BufferReader, fetchWatermark
 		toKafka.log = logging.NewLogger()
 	}
 	toKafka.log = toKafka.log.With("sinkType", "kafka").With("topic", kafkaSink.Topic)
-	toKafka.name = vertex.Spec.Name
-	toKafka.pipelineName = vertex.Spec.PipelineName
+	toKafka.name = vertexInstance.Vertex.Spec.Name
+	toKafka.pipelineName = vertexInstance.Vertex.Spec.PipelineName
 	toKafka.topic = kafkaSink.Topic
 	toKafka.kafkaSink = kafkaSink
 
-	forwardOpts := []forward.Option{forward.WithVertexType(dfv1.VertexTypeSink), forward.WithLogger(toKafka.log)}
-	if x := vertex.Spec.Limits; x != nil {
+	forwardOpts := []sinkforward.Option{sinkforward.WithLogger(toKafka.log)}
+	if x := vertexInstance.Vertex.Spec.Limits; x != nil {
 		if x.ReadBatchSize != nil {
-			forwardOpts = append(forwardOpts, forward.WithReadBatchSize(int64(*x.ReadBatchSize)))
+			forwardOpts = append(forwardOpts, sinkforward.WithReadBatchSize(int64(*x.ReadBatchSize)))
 		}
 	}
 
-	f, err := forward.NewInterStepDataForward(vertex, fromBuffer, map[string]isb.BufferWriter{vertex.GetToBuffers()[0].Name: toKafka}, forward.All, applier.Terminal, fetchWatermark, publishWatermark, forwardOpts...)
+	f, err := sinkforward.NewDataForward(vertexInstance, fromBuffer, toKafka, fetchWatermark, publishWatermark, idleManager, forwardOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +136,12 @@ func connect(kafkaSink *dfv1.KafkaSink) (sarama.AsyncProducer, error) {
 // GetName returns the name.
 func (tk *ToKafka) GetName() string {
 	return tk.name
+}
+
+// GetPartitionIdx returns the partition index.
+// for sink it is always 0.
+func (tk *ToKafka) GetPartitionIdx() int32 {
+	return 0
 }
 
 // Write writes to the kafka topic.
