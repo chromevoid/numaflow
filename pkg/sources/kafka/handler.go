@@ -79,3 +79,7 @@ func (consumer *consumerHandler) ConsumeClaim(session sarama.ConsumerGroupSessio
 
 	}
 }
+
+func (consumer *consumerHandler) ResetOffset(topic string, partitionID int32, offset int64, metadata string) {
+	consumer.sess.ResetOffset(topic, partitionID, offset, metadata)
+}

@@ -344,6 +344,13 @@ func NewKafkaSource(
 
 	handler := newConsumerHandler(ks.handlerBuffer)
 	ks.handler = handler
+	// TODO: time to be given by the user
+	epoch := time.Now().UnixMilli()
+	partitions, _ := ks.saramaClient.Partitions(source.Topic)
+	for partition := range partitions {
+		offset, _ := ks.saramaClient.GetOffset(source.Topic, int32(partition), epoch)
+		ks.handler.ResetOffset(source.Topic, int32(partition), offset, "")
+	}
 
 	forwardOpts := []sourceforward.Option{sourceforward.WithLogger(ks.logger)}
 	if x := vertexInstance.Vertex.Spec.Limits; x != nil {
